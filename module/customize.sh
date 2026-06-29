@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# TS18 SAF v0.8.0 installer. MMT/Magisk style: SKIPUNZIP=1 and controlled extraction.
+# TS18 SAF DocsUI installer.
 # Installer work is under /data/adb, with /storage/emulated/0 fallback only.
 
 SKIPUNZIP=1

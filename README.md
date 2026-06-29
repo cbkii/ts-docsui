@@ -1,10 +1,10 @@
 # TS18 SAF DocumentsUI Magisk Module
 
-Private development repository for the TS18 Android 10 SAF/DocumentsUI Magisk module.
+Repository for the TS18 Android 10 SAF/DocumentsUI Magisk module.
 
-Current module metadata:
+Baseline module metadata:
 
-- `id=ts18_documentsui_saf_full`
+- `id=ts18_docsui_saf`
 - `version=v0.8.0`
 - `versionCode=080`
 
@@ -50,8 +50,6 @@ The workflow:
 2. builds an installable Magisk ZIP;
 3. uploads it as a workflow artifact;
 4. optionally creates or updates a GitHub Release with the ZIP, SHA256, and `update.json`.
-
-For a private repo, Magisk's in-app `updateJson` URL is not added to `module.prop` because private GitHub release assets are not anonymously reachable by the TS18 unit. Download the ZIP from the private Release or workflow artifact and install it manually in Magisk.
 
 ## TS18 safety notes
 

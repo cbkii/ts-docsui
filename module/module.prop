@@ -1,6 +1,6 @@
-id=ts18_documentsui_saf_full
-name=TS18 SAF DocumentsUI Stable Picker Repair
+id=ts18_docsui_saf
+name=TS18 SAF DocumentsUI File Picker
 version=v0.8.0
 versionCode=080
-author=CB + OpenAI
-description=TS18 Android 10 SAF picker repair: stable AOSP DocumentsUI, AppManager interceptor disable, broken TS18LocalProvider disabled, hide broken advanced external roots by default, MiXplorer provider support, comprehensive Download-export diagnostics.
+author=cbkii
+description=TS18 Android 10 SAF AOSP DocumentsUI, MiXplorer fallback

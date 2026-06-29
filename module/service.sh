@@ -1,7 +1,7 @@
 #!/system/bin/sh
-# TS18 SAF v0.8.0 service: no-crash picker repair.
+# TS18 SAF service: no-crash picker repair.
 # - Keeps stable DocumentsUI overlay.
-# - Disables invalid TS18LocalDocumentsProvider from v2.2.
+# - Disables invalid TS18LocalDocumentsProvider.
 # - Keeps ExternalStorageProvider if present but hides advanced/broken roots by DocumentsUI prefs.
 # - Enables MiXplorer DocumentsProvider as existing broad-access fallback.
 

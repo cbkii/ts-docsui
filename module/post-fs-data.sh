@@ -1,5 +1,6 @@
 #!/system/bin/sh
-# TS18 SAF v0.8.0 early shared-storage preparation. Bounded; no diagnostics output here.
+# TS18 SAF early shared-storage preparation.
+# Bounded; no diagnostics output here.
 CFG=/data/adb/ts18-documentsui-saf.conf
 LOG=/data/adb/ts18-documentsui-saf/logs/post-fs-data-v080.log
 TARGET_USER=0
