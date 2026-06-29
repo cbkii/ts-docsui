@@ -1,0 +1,19 @@
+# Local build output
+dist/
+*.log
+*.tmp
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local diagnostics/backups
+*.bak
+*.orig
+*.rej
+
+# Never commit local private config
+*.local
+.env

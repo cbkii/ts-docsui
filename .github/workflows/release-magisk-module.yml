@@ -1,0 +1,135 @@
+name: Build and release Magisk module
+
+'on':
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: 'Optional guard: expected module.prop version'
+        required: false
+        default: 'v0.8.0'
+        type: string
+      expected_version_code:
+        description: 'Optional guard: expected module.prop versionCode'
+        required: false
+        default: '080'
+        type: string
+      create_release:
+        description: 'Create or update a GitHub Release with ZIP assets'
+        required: true
+        default: true
+        type: boolean
+      tag:
+        description: 'Release tag. Leave blank to use module.prop version.'
+        required: false
+        default: ''
+        type: string
+      draft:
+        description: 'Create a draft release if the release does not exist'
+        required: true
+        default: false
+        type: boolean
+      prerelease:
+        description: 'Mark release as pre-release if the release does not exist'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build installable module zip
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate module metadata and structure
+        run: |
+          python3 scripts/validate-module.py \
+            --module-dir module \
+            --expected-version '${{ inputs.expected_version }}' \
+            --expected-version-code '${{ inputs.expected_version_code }}'
+
+      - name: Build installable Magisk zip
+        id: build
+        run: |
+          python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --github-output "$GITHUB_OUTPUT"
+
+      - name: Decide release tag
+        id: tag
+        run: |
+          tag='${{ inputs.tag }}'
+          if [[ -z "$tag" ]]; then
+            tag='${{ steps.build.outputs.version }}'
+          fi
+          if [[ -z "$tag" ]]; then
+            echo 'Tag resolved to empty string' >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_name=TS18 SAF DocumentsUI ${{ steps.build.outputs.version }} (${{ steps.build.outputs.version_code }})" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release metadata
+        run: |
+          python3 scripts/make-update-json.py \
+            --module-dir module \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag '${{ steps.tag.outputs.tag }}' \
+            --zip-name '${{ steps.build.outputs.zip_name }}' \
+            --out dist/update.json
+          cat > dist/release-notes.md <<'EOF'
+          # TS18 SAF DocumentsUI ${{ steps.build.outputs.version }}
+
+          Installable Magisk ZIP built from this repository.
+
+          - Module ID: `${{ steps.build.outputs.module_id }}`
+          - Version: `${{ steps.build.outputs.version }}`
+          - Version code: `${{ steps.build.outputs.version_code }}`
+          - SHA256: `${{ steps.build.outputs.sha256 }}`
+
+          For private repositories, download the ZIP from this release while signed in to GitHub, then install it manually in Magisk.
+          EOF
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.zip_name }}
+          path: |
+            ${{ steps.build.outputs.zip_path }}
+            ${{ steps.build.outputs.sha256_path }}
+            dist/update.json
+            dist/release-notes.md
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          ZIP_PATH: ${{ steps.build.outputs.zip_path }}
+          SHA_PATH: ${{ steps.build.outputs.sha256_path }}
+          RELEASE_NAME: ${{ steps.tag.outputs.release_name }}
+          DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP_PATH" "$SHA_PATH" dist/update.json --clobber
+          else
+            args=(release create "$TAG" "$ZIP_PATH" "$SHA_PATH" dist/update.json --title "$RELEASE_NAME" --notes-file dist/release-notes.md)
+            if [[ "$DRAFT" == 'true' ]]; then
+              args+=(--draft)
+            fi
+            if [[ "$PRERELEASE" == 'true' ]]; then
+              args+=(--prerelease)
+            fi
+            gh "${args[@]}"
+          fi

@@ -1,0 +1,51 @@
+# TS18 SAF DocumentsUI Stable Picker Repair v0.8.0
+# Runtime copy: /data/adb/ts18-documentsui-saf.conf
+# Edit runtime copy, then reboot. 1/on/yes/enabled = enabled. 0/off/no/disabled = disabled.
+
+TARGET_USER=0
+BOOT_WAIT_ATTEMPTS=45
+BOOT_WAIT_SECONDS=2
+
+# Stable picker path: AOSP Android 10 DocumentsUI only. The v2.2 custom TS18 provider is disabled because its DEX is invalid on TS18.
+FIX_ENABLE_AOSP_DOCUMENTSUI=1
+FIX_ENABLE_DOCUMENTSUI_COMPONENTS=1
+FIX_DISABLE_TS18_LOCAL_SAF_PROVIDER=1
+FIX_ENABLE_TS18_LOCAL_SAF_PROVIDER=0
+FIX_ENABLE_TS18_LOCAL_SAF_PROVIDER_COMPONENTS=0
+FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR=1
+FIX_DISABLE_GOOGLE_AML_DOCUMENTSUI=1
+FIX_REMOVE_USER_DOCUMENTSUI_SHADOWS=0
+
+# Keep canonical ExternalStorageProvider package if present, but hide its advanced/broken device roots by default.
+# This keeps the useful Documents root while avoiding the s9863a1h10_Natv / USB Drive roots that currently show "Can't load content".
+FIX_TOUCH_CANONICAL_EXTERNALSTORAGE_PROVIDER=1
+FIX_ENABLE_CANONICAL_EXTERNALSTORAGE_PROVIDER=1
+FIX_DISABLE_EXTERNALSTORAGE_TEST_PROVIDER=1
+FIX_HIDE_BROKEN_EXTERNAL_ADVANCED_ROOTS=1
+FIX_DISABLE_CANONICAL_EXTERNALSTORAGE_PROVIDER=0
+FIX_FORCE_STOP_EXTERNALSTORAGE=0
+FIX_CLEAR_EXTERNALSTORAGE_DATA=0
+
+# Optional existing broad-access provider fallback. MiXplorer is already installed on the target and has a real DocumentsProvider.
+FIX_ENABLE_MIXPLORER_PROVIDER=1
+FIX_GRANT_MIXPLORER_STORAGE_PERMS=1
+
+# Android-10-compatible grants/appops. v0.8.0 grants only permissions requested by each package and filters unknown appops.
+FIX_GRANT_DOCUMENTSUI_RUNTIME_PERMS=1
+FIX_SET_DOCUMENTSUI_APPOPS=1
+FIX_SET_LEGACY_STORAGE_APPOPS=1
+
+# DocumentsUI state repair.
+FIX_FIX_APP_DATA_OWNERSHIP=1
+FIX_SET_DOCUMENTSUI_DEVICE_ROOT_PREFS=1
+FIX_RESET_DOCUMENTSUI_ROOTS_CACHE=1
+FIX_CREATE_STANDARD_INTERNAL_DIRS=1
+FIX_FORCE_STOP_DOCUMENTSUI=1
+FIX_PROVIDER_WARMUP_QUERIES=1
+
+# Diagnostics: manual Action only; output final archive and logs to Download.
+DIAG_AUTO_RUN_ON_BOOT=0
+DIAG_OUTPUT_ROOT=/storage/emulated/0/Download/TS18-SAF-Diagnostics
+DIAG_COPY_RELEVANT_APKS=1
+DIAG_COPY_ALL_APKS=0
+DIAG_MAX_COPY_BYTES=52428800

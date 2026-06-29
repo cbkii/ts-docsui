@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<config>
+    <component-override package="com.android.documentsui">
+        <component class="com.android.documentsui.LauncherActivity" enabled="true" />
+        <component class="com.android.documentsui.files.FilesActivity" enabled="true" />
+        <component class="com.android.documentsui.picker.PickActivity" enabled="true" />
+    </component-override>
+</config>

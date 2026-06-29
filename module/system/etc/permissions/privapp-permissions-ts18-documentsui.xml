@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<permissions>
+    <privapp-permissions package="com.android.documentsui">
+        <permission name="android.permission.GET_APP_GRANTED_URI_PERMISSIONS" />
+        <permission name="android.permission.MANAGE_DOCUMENTS" />
+        <permission name="android.permission.REMOVE_TASKS" />
+        <permission name="android.permission.CACHE_CONTENT" />
+        <permission name="android.permission.CHANGE_OVERLAY_PACKAGES" />
+    </privapp-permissions>
+</permissions>
