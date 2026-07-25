@@ -202,12 +202,13 @@ jobs:
             --version-tag "${RELEASE_TAG}" \
             --version-code "${RELEASE_VERSION_CODE}" \
             --apply
+          python3 scripts/sync_runtime_version.py --repo-root . --apply
 
-          if git diff --quiet -- module/module.prop; then
+          if git diff --quiet -- module/module.prop module/service.sh module/tools/ts18-saf-deepdiag.sh; then
             echo 'Version metadata already matches the requested new release.'
             metadata_commit_created=false
           else
-            git add module/module.prop
+            git add module/module.prop module/service.sh module/tools/ts18-saf-deepdiag.sh
             git commit -m "chore(release): prepare ${RELEASE_TAG}"
             git push origin "HEAD:${GITHUB_REF_NAME}"
             metadata_commit_created=true
@@ -254,6 +255,7 @@ jobs:
             --module-dir module \
             --expected-version "${RELEASE_TAG}" \
             --expected-version-code "${RELEASE_VERSION_CODE}"
+          python3 scripts/sync_runtime_version.py --repo-root . --check
 
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           aapt_path="$(find "${sdk_root}/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
