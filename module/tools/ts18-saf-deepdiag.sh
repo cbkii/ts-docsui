@@ -1,236 +1,340 @@
 #!/system/bin/sh
-# TS18 SAF v0.8.0 comprehensive manual diagnostics.
-# Final output and work directory are under /storage/emulated/0/Download only.
+# Comprehensive manual diagnostics for TS18 Full File Picker.
+# Work and final archives stay under /storage/emulated/0/Download.
 
 MODE=${1:-full}
 TARGET_USER=${TARGET_USER:-0}
 TS=$(date '+%Y%m%d-%H%M%S' 2>/dev/null || echo now)
 OUT_BASE=${TS18_SAF_EXPORT_ROOT:-/storage/emulated/0/Download/TS18-SAF-Diagnostics}
-RUN_ID="ts18-saf-v080-${MODE}-${TS}"
-WORK="$OUT_BASE/$RUN_ID"
-LOG="$WORK/collector.log"
-SUMMARY="$WORK/SUMMARY.txt"
+RUN_ID=ts18-docsui-v100-${MODE}-${TS}
+WORK=$OUT_BASE/$RUN_ID
+LOG=$WORK/collector.log
+SUMMARY=$WORK/SUMMARY.txt
 TIMEOUT_SECONDS=${TS18_SAF_TIMEOUT_SECONDS:-30}
 MAX_COPY_BYTES=${DIAG_MAX_COPY_BYTES:-52428800}
 DIAG_COPY_RELEVANT_APKS=${DIAG_COPY_RELEVANT_APKS:-1}
 DIAG_COPY_ALL_APKS=${DIAG_COPY_ALL_APKS:-0}
+ROOT_AUTH=com.cbkii.tsdocsui.root.documents
+ROOT_PKG=com.cbkii.tsdocsui.rootprovider
+ROOT_HELPER=/data/adb/ts18-documentsui-saf/rootfs-helper.sh
 
 mkdir -p "$WORK" 2>/dev/null || { echo "STOP: cannot create $WORK"; exit 1; }
-mkdir -p "$WORK"/identity "$WORK"/packages "$WORK"/providers "$WORK"/storage "$WORK"/paths "$WORK"/files "$WORK"/apks "$WORK"/logs "$WORK"/smoke "$WORK"/module "$WORK"/crash 2>/dev/null || true
-say() { echo "[$(date '+%H:%M:%S' 2>/dev/null || echo time)] $*" | tee -a "$LOG" >&2; }
-section() { f="$1"; title="$2"; { echo; echo "===== $title ====="; echo "time=$(date '+%F %T %z' 2>/dev/null || echo unknown)"; } >> "$f" 2>&1; }
+for directory in identity module packages providers storage paths permissions root-provider logs crash files apks smoke; do
+  mkdir -p "$WORK/$directory" 2>/dev/null || true
+done
+
+say() {
+  echo "[$(date '+%H:%M:%S' 2>/dev/null || echo time)] $*" | tee -a "$LOG" >&2
+}
+
+section() {
+  file=$1
+  title=$2
+  {
+    echo
+    echo "===== $title ====="
+    echo "time=$(date '+%F %T %z' 2>/dev/null || echo unknown)"
+  } >> "$file" 2>&1
+}
 
 find_timeout() {
   if [ -x /data/adb/magisk/busybox ]; then echo "/data/adb/magisk/busybox timeout"; return; fi
-  command -v timeout >/dev/null 2>&1 && { echo "timeout"; return; }
+  command -v timeout >/dev/null 2>&1 && { echo timeout; return; }
   command -v busybox >/dev/null 2>&1 && { echo "busybox timeout"; return; }
-  command -v toybox >/dev/null 2>&1 && { echo "toybox timeout"; return; }
   echo ""
 }
-TIMEOUT_CMD="$(find_timeout)"
+TIMEOUT_CMD=$(find_timeout)
 
 run_to() {
-  sec="$1"; file="$2"; shift 2
-  { echo; echo "\$ $*"; } >> "$file" 2>&1
+  seconds=$1
+  file=$2
+  shift 2
+  { echo; printf '$'; printf ' %s' "$@"; echo; } >> "$file" 2>&1
   if [ -n "$TIMEOUT_CMD" ]; then
     # shellcheck disable=SC2086
-    $TIMEOUT_CMD "$sec" "$@" >> "$file" 2>&1
+    $TIMEOUT_CMD "$seconds" "$@" >> "$file" 2>&1
   else
-    echo "[warn] timeout unavailable; running without outer timeout" >> "$file"
+    echo "[warn] timeout unavailable" >> "$file"
     "$@" >> "$file" 2>&1
   fi
   rc=$?
-  echo "[exit=$rc]" >> "$file" 2>&1
+  echo "[exit=$rc]" >> "$file"
   return 0
 }
+
 run_sh_to() {
-  sec="$1"; file="$2"; shift 2; cmd="$*"
-  { echo; echo "\$ sh -c '$cmd'"; } >> "$file" 2>&1
+  seconds=$1
+  file=$2
+  shift 2
+  command_text=$*
+  { echo; echo "\$ sh -c '$command_text'"; } >> "$file" 2>&1
   if [ -n "$TIMEOUT_CMD" ]; then
     # shellcheck disable=SC2086
-    $TIMEOUT_CMD "$sec" sh -c "$cmd" >> "$file" 2>&1
+    $TIMEOUT_CMD "$seconds" sh -c "$command_text" >> "$file" 2>&1
   else
-    echo "[warn] timeout unavailable; running without outer timeout" >> "$file"
-    sh -c "$cmd" >> "$file" 2>&1
+    echo "[warn] timeout unavailable" >> "$file"
+    sh -c "$command_text" >> "$file" 2>&1
   fi
-  echo "[exit=$?]" >> "$file" 2>&1
+  rc=$?
+  echo "[exit=$rc]" >> "$file"
+  return 0
 }
-content_query_to() {
-  file="$1"; uri="$2"
-  { echo; echo "--- content query $uri user=$TARGET_USER ---"; } >> "$file"
+
+content_query() {
+  file=$1
+  uri=$2
+  { echo; echo "--- $uri user=$TARGET_USER ---"; } >> "$file"
   run_sh_to "$TIMEOUT_SECONDS" "$file" "content query --uri '$uri' --user '$TARGET_USER'"
-  run_sh_to "$TIMEOUT_SECONDS" "$file" "content --user '$TARGET_USER' query --uri '$uri'"
   run_sh_to "$TIMEOUT_SECONDS" "$file" "content query --uri '$uri'"
 }
+
 copy_file_limited() {
-  src="$1"; dst="$2"
-  [ -e "$src" ] || return 0
-  size=$(wc -c < "$src" 2>/dev/null || echo 0)
+  source=$1
+  destination=$2
+  [ -f "$source" ] || return 0
+  size=$(wc -c < "$source" 2>/dev/null || echo 0)
   case "$size" in ''|*[!0-9]*) size=0 ;; esac
-  mkdir -p "$(dirname "$dst")" 2>/dev/null || return 0
   if [ "$MAX_COPY_BYTES" -gt 0 ] && [ "$size" -gt "$MAX_COPY_BYTES" ]; then
-    echo "SKIP large file $src size=$size max=$MAX_COPY_BYTES" >> "$WORK/files/SKIPPED-LARGE-FILES.txt"
+    echo "SKIP size=$size path=$source" >> "$WORK/files/SKIPPED-LARGE-FILES.txt"
     return 0
   fi
-  cp -a "$src" "$dst" >> "$LOG" 2>&1 || echo "copy failed: $src" >> "$LOG"
+  mkdir -p "$(dirname "$destination")" 2>/dev/null || return 0
+  cp -a "$source" "$destination" >> "$LOG" 2>&1 || echo "copy failed: $source" >> "$LOG"
 }
+
 copy_tree_limited() {
-  src="$1"; dst="$2"; maxdepth="${3:-3}"
-  [ -d "$src" ] || return 0
-  mkdir -p "$dst" 2>/dev/null || true
-  find "$src" -maxdepth "$maxdepth" -type f 2>/dev/null | while IFS= read -r f; do
-    rel=${f#$src/}
-    copy_file_limited "$f" "$dst/$rel"
+  source=$1
+  destination=$2
+  depth=${3:-3}
+  [ -d "$source" ] || return 0
+  find "$source" -maxdepth "$depth" -type f 2>/dev/null | while IFS= read -r file; do
+    relative=${file#$source/}
+    copy_file_limited "$file" "$destination/$relative"
   done
 }
+
 copy_pkg_apks() {
-  pkg="$1"; dst="$WORK/apks/$pkg"; mkdir -p "$dst" 2>/dev/null || true
-  pm path "$pkg" 2>/dev/null | sed 's/^package://' | while IFS= read -r apk; do
-    [ -n "$apk" ] || continue
-    copy_file_limited "$apk" "$dst/$(basename "$apk")"
+  package=$1
+  destination=$WORK/apks/$package
+  mkdir -p "$destination" 2>/dev/null || true
+  pm path "$package" 2>/dev/null | sed 's/^package://' | while IFS= read -r apk; do
+    [ -f "$apk" ] || continue
+    copy_file_limited "$apk" "$destination/$(basename "$apk")"
     sha256sum "$apk" >> "$WORK/apks/SHA256SUMS.txt" 2>/dev/null || true
   done
 }
 
-say "Starting TS18 SAF v0.8.0 diagnostics mode=$MODE"
-say "Output directory: $WORK"
-say "Timeout command: ${TIMEOUT_CMD:-none} seconds=$TIMEOUT_SECONDS"
+safe_root_helper() {
+  file=$1
+  action=$2
+  shift 2
+  [ -x "$ROOT_HELPER" ] || { echo "root helper missing: $ROOT_HELPER" >> "$file"; return 0; }
+  [ -x /data/adb/magisk/busybox ] || { echo "Magisk BusyBox missing" >> "$file"; return 0; }
+  encoded=""
+  for value in "$@"; do
+    arg=$(printf '%s' "$value" | /data/adb/magisk/busybox base64 2>/dev/null | /data/adb/magisk/busybox tr -d '\r\n')
+    encoded="$encoded '$arg'"
+  done
+  run_sh_to "$TIMEOUT_SECONDS" "$file" "'$ROOT_HELPER' '$action' $encoded"
+}
 
-F="$WORK/identity/system.txt"; section "$F" identity
-for c in 'id' 'uname -a' 'getenforce' 'cat /proc/uptime' 'getprop ro.build.display.id' 'getprop ro.build.version.sdk' 'getprop ro.product.device' 'getprop ro.product.board' 'getprop ro.hardware' 'getprop ro.boot.verifiedbootstate' 'getprop ro.boot.vbmeta.device_state'; do run_sh_to "$TIMEOUT_SECONDS" "$F" "$c"; done
+say "Starting TS18 file-picker diagnostics"
+say "Output directory: $WORK"
+
+F=$WORK/identity/system.txt
+section "$F" identity
+for command_text in \
+  'id' 'uname -a' 'getenforce' 'cat /proc/uptime' \
+  'getprop ro.build.display.id' 'getprop ro.build.version.sdk' \
+  'getprop ro.product.device' 'getprop ro.product.board' 'getprop ro.hardware' \
+  'getprop ro.boot.verifiedbootstate' 'getprop ro.boot.vbmeta.device_state' \
+  'magisk -v' 'magisk -V'; do
+  run_sh_to "$TIMEOUT_SECONDS" "$F" "$command_text"
+done
 run_to "$TIMEOUT_SECONDS" "$F" getprop
 
-F="$WORK/module/module-state.txt"; section "$F" module
-for p in /data/adb/modules/ts18_documentsui_saf_full/module.prop /data/adb/modules/ts18_documentsui_saf_full/config.default /data/adb/ts18-documentsui-saf.conf /data/adb/ts18-documentsui-saf/logs/service-v080.log /data/adb/ts18-documentsui-saf/logs/post-fs-data-v080.log /data/adb/ts18-documentsui-saf/logs/install-v080.log; do copy_file_limited "$p" "$WORK/module/$(basename "$p")"; done
+F=$WORK/module/state.txt
+section "$F" module
 run_to "$TIMEOUT_SECONDS" "$F" ls -la /data/adb/modules
 run_to "$TIMEOUT_SECONDS" "$F" ls -la /data/adb/modules/ts18_documentsui_saf_full
-run_to "$TIMEOUT_SECONDS" "$F" find /data/adb/modules/ts18_documentsui_saf_full -maxdepth 5 -type f -print
+run_to "$TIMEOUT_SECONDS" "$F" find /data/adb/modules/ts18_documentsui_saf_full -maxdepth 6 -type f -print
+for source in \
+  /data/adb/modules/ts18_documentsui_saf_full/module.prop \
+  /data/adb/modules/ts18_documentsui_saf_full/config.default \
+  /data/adb/ts18-documentsui-saf.conf \
+  /data/adb/ts18-documentsui-saf/applied-state \
+  /data/adb/ts18-documentsui-saf/rootfs-helper.sh \
+  /data/adb/ts18-documentsui-saf/logs/install-v100.log \
+  /data/adb/ts18-documentsui-saf/logs/service-v100.log \
+  /data/adb/ts18-documentsui-saf/logs/post-fs-data-v100.log; do
+  copy_file_limited "$source" "$WORK/module/$(basename "$source")"
+done
 
-F="$WORK/packages/package-lists.txt"; section "$F" packages
+F=$WORK/packages/lists.txt
+section "$F" packages
 run_to "$TIMEOUT_SECONDS" "$F" pm list packages -f -U
 run_to "$TIMEOUT_SECONDS" "$F" pm list packages -d -f -U
-run_to "$TIMEOUT_SECONDS" "$F" pm list permissions -d -g
 run_to "$TIMEOUT_SECONDS" "$F" cmd package list users
-run_to "$TIMEOUT_SECONDS" "$F" cmd package resolve-activity --brief -a android.intent.action.OPEN_DOCUMENT_TREE
-run_to "$TIMEOUT_SECONDS" "$F" cmd package query-activities -a android.intent.action.OPEN_DOCUMENT_TREE
-run_to "$TIMEOUT_SECONDS" "$F" cmd package query-activities -a android.intent.action.GET_CONTENT -t '*/*'
-run_to "$TIMEOUT_SECONDS" "$F" cmd package query-activities -a android.intent.action.OPEN_DOCUMENT -t '*/*'
+run_to "$TIMEOUT_SECONDS" "$F" cmd package query-activities -a android.intent.action.OPEN_DOCUMENT_TREE --user "$TARGET_USER"
+run_to "$TIMEOUT_SECONDS" "$F" cmd package query-activities -a android.intent.action.OPEN_DOCUMENT -t '*/*' --user "$TARGET_USER"
+run_to "$TIMEOUT_SECONDS" "$F" cmd package query-activities -a android.intent.action.CREATE_DOCUMENT -t '*/*' --user "$TARGET_USER"
+run_to "$TIMEOUT_SECONDS" "$F" cmd package query-activities -a android.intent.action.GET_CONTENT -t '*/*' --user "$TARGET_USER"
 
-PKGS="com.android.documentsui com.google.android.documentsui com.ts18.safprovider com.android.externalstorage com.android.providers.downloads com.android.providers.media com.android.storagemanager com.android.storageclearmanager com.android.sharedstoragebackup com.mixplorer me.zhanghai.android.files io.github.muntashirakon.AppManager com.google.android.documentsui"
-for pkg in $PKGS; do
-  F="$WORK/packages/$pkg.txt"; section "$F" "package $pkg"
-  run_to "$TIMEOUT_SECONDS" "$F" pm path "$pkg"
-  run_to "$TIMEOUT_SECONDS" "$F" pm dump "$pkg"
-  run_to "$TIMEOUT_SECONDS" "$F" appops get "$pkg"
-  if [ "$DIAG_COPY_RELEVANT_APKS" = "1" ]; then copy_pkg_apks "$pkg"; fi
+PACKAGES="com.android.documentsui com.google.android.documentsui com.android.externalstorage com.android.providers.downloads com.android.providers.media $ROOT_PKG com.mixplorer io.github.muntashirakon.AppManager me.zhanghai.android.files com.android.storagemanager com.android.sharedstoragebackup"
+for package in $PACKAGES; do
+  F=$WORK/packages/$package.txt
+  section "$F" "package $package"
+  run_to "$TIMEOUT_SECONDS" "$F" pm path "$package"
+  run_to "$TIMEOUT_SECONDS" "$F" pm dump "$package"
+  run_to "$TIMEOUT_SECONDS" "$F" appops get "$package"
+  uid=$(cmd package list packages -U "$package" 2>/dev/null | sed -n 's/.* uid://p' | head -n 1)
+  echo "resolved_uid=$uid" >> "$F"
+  if [ -n "$uid" ]; then
+    run_sh_to "$TIMEOUT_SECONDS" "$F" "magisk --sqlite 'SELECT uid,policy,until,logging,notification FROM policies WHERE uid=$uid;'"
+  fi
+  [ "$DIAG_COPY_RELEVANT_APKS" = 1 ] && copy_pkg_apks "$package"
 done
-if [ "$DIAG_COPY_ALL_APKS" = "1" ]; then
-  say "Copying all APKs is enabled; this may be large"
+
+if [ "$DIAG_COPY_ALL_APKS" = 1 ]; then
+  say "Copying all installed APKs"
   pm list packages -f 2>/dev/null | sed -n 's/^package://p' | while IFS= read -r line; do
-    apk=${line%%=*}; pkg=${line##*=}; [ -n "$apk" ] && [ -n "$pkg" ] || continue
-    copy_file_limited "$apk" "$WORK/apks/all/$pkg/$(basename "$apk")"
+    apk=${line%%=*}
+    package=${line##*=}
+    [ -f "$apk" ] && copy_file_limited "$apk" "$WORK/apks/all/$package/$(basename "$apk")"
   done
 fi
 
-F="$WORK/providers/provider-registry.txt"; section "$F" providers
+F=$WORK/providers/registry.txt
+section "$F" provider_registry
 run_to "$TIMEOUT_SECONDS" "$F" dumpsys package providers
-run_sh_to "$TIMEOUT_SECONDS" "$F" "dumpsys package providers | grep -i -A18 -B10 'android.content.action.DOCUMENTS_PROVIDER\|documentsui\|downloads.documents\|externalstorage\|ts18.safprovider\|mixplorer\|zhanghai\|AppManager'"
 run_to "$TIMEOUT_SECONDS" "$F" dumpsys activity providers
+run_sh_to "$TIMEOUT_SECONDS" "$F" "dumpsys package providers | grep -i -A24 -B12 'DOCUMENTS_PROVIDER\|documentsui\|externalstorage\|downloads.documents\|cbkii.tsdocsui\|mixplorer\|AppManager'"
 
-F="$WORK/providers/content-queries.txt"; section "$F" "content queries"
+F=$WORK/providers/queries.txt
+section "$F" provider_queries
 for uri in \
-  content://com.ts18.safprovider.documents/root \
-  content://com.ts18.safprovider.documents/document/ts18_internal%3A \
-  content://com.ts18.safprovider.documents/document/ts18_internal%3A/children \
   content://com.android.providers.downloads.documents/root \
-  content://com.android.providers.downloads.documents/document/downloads \
   content://com.android.providers.downloads.documents/document/downloads/children \
   content://com.android.externalstorage.documents/root \
-  content://com.android.externalstorage.documents/document/home%3A \
-  content://com.android.externalstorage.documents/document/home%3A/children \
   content://com.android.externalstorage.documents/document/primary%3A \
   content://com.android.externalstorage.documents/document/primary%3A/children \
+  content://com.android.externalstorage.documents/document/home%3A/children \
+  content://$ROOT_AUTH/root \
   content://com.mixplorer.doc/root; do
-  content_query_to "$F" "$uri"
+  content_query "$F" "$uri"
 done
 
-F="$WORK/storage/storage-manager.txt"; section "$F" storage
-for c in 'sm list-volumes all' 'sm list-disks' 'sm get-primary-storage-uuid' 'cmd storage help' 'cmd storage list-volumes all' 'dumpsys mount' 'dumpsys storage' 'dumpsys storaged' 'dumpsys user' 'dumpsys diskstats'; do run_sh_to "$TIMEOUT_SECONDS" "$F" "$c"; done
-
-F="$WORK/paths/mounts-and-paths.txt"; section "$F" paths
-for c in 'mount' 'cat /proc/mounts' 'cat /proc/self/mountinfo' 'df -h' 'ls -la /' 'ls -la /storage' 'ls -la /mnt' 'ls -la /data/adb'; do run_sh_to "$TIMEOUT_SECONDS" "$F" "$c"; done
-for p in /data/media /data/media/0 /storage /storage/emulated /storage/emulated/0 /sdcard /mnt/runtime/default/emulated/0 /mnt/runtime/read/emulated/0 /mnt/runtime/write/emulated/0 /mnt/runtime/full/emulated/0 /mnt/media_rw /mnt/media_rw/usbdisk0 /mnt/media_rw/usbdisk1 /storage/usbdisk0 /storage/usbdisk1 /data/user/0/com.android.documentsui /data/user/0/com.ts18.safprovider /data/data/com.android.documentsui /data/data/com.ts18.safprovider; do
-  echo "--- $p ---" >> "$F"
-  ls -ldZ "$p" >> "$F" 2>&1 || ls -ld "$p" >> "$F" 2>&1 || true
-  readlink -f "$p" >> "$F" 2>&1 || true
-  ls -laZ "$p" | head -n 120 >> "$F" 2>&1 || ls -la "$p" | head -n 120 >> "$F" 2>&1 || true
+# Discover root-provider document IDs and query their first level exactly as DocumentsUI does.
+run_sh_to "$TIMEOUT_SECONDS" "$F" "content query --uri content://$ROOT_AUTH/root --user '$TARGET_USER'"
+root_ids=$(content query --uri content://$ROOT_AUTH/root --user "$TARGET_USER" 2>/dev/null | sed -n 's/.*document_id=\([^,]*\).*/\1/p')
+for document_id in $root_ids; do
+  encoded=$(printf '%s' "$document_id" | sed 's/:/%3A/g; s|/|%2F|g; s/+/%2B/g; s/=/%3D/g')
+  content_query "$F" "content://$ROOT_AUTH/document/$encoded"
+  content_query "$F" "content://$ROOT_AUTH/document/$encoded/children"
 done
-run_sh_to "$TIMEOUT_SECONDS" "$F" "find /storage/emulated/0 -maxdepth 4 -print | head -n 3000"
-run_sh_to "$TIMEOUT_SECONDS" "$F" "find /data/adb -maxdepth 6 -print"
-run_sh_to "$TIMEOUT_SECONDS" "$F" "find /data/user/0/com.android.documentsui /data/user/0/com.ts18.safprovider /data/data/com.android.documentsui /data/data/com.ts18.safprovider -maxdepth 6 -print 2>/dev/null"
 
-say "Copying relevant system/app state files"
-for p in \
-  /data/system/packages.xml /data/system/packages.list /data/system/packages-stopped.xml /data/system/appops.xml /data/system/storage.xml /data/system/users/0.xml /data/system/users/userlist.xml \
-  /system/build.prop /vendor/build.prop /product/build.prop /odm/build.prop /system_ext/build.prop \
-  /data/anr/traces.txt; do copy_file_limited "$p" "$WORK/files${p}"; done
+F=$WORK/root-provider/helper.txt
+section "$F" root_provider_helper
+safe_root_helper "$F" ping
+safe_root_helper "$F" stat /
+safe_root_helper "$F" list /
+safe_root_helper "$F" stat /storage/emulated/0
+safe_root_helper "$F" list /storage/emulated/0
+safe_root_helper "$F" stat /system/build.prop
+
+F=$WORK/storage/storage.txt
+section "$F" storage
+for command_text in \
+  'sm list-volumes all' 'sm list-disks' 'sm get-primary-storage-uuid' \
+  'dumpsys mount' 'dumpsys storage' 'dumpsys storaged' 'dumpsys user' 'dumpsys diskstats'; do
+  run_sh_to "$TIMEOUT_SECONDS" "$F" "$command_text"
+done
+
+F=$WORK/paths/mounts.txt
+section "$F" mounts_and_paths
+for command_text in 'mount' 'cat /proc/mounts' 'cat /proc/self/mountinfo' 'df -h' 'ls -la /' 'ls -la /storage' 'ls -la /mnt' 'ls -la /data/adb'; do
+  run_sh_to "$TIMEOUT_SECONDS" "$F" "$command_text"
+done
+for path in \
+  /data/media /data/media/0 /storage /storage/emulated /storage/emulated/0 /sdcard \
+  /mnt/runtime/default/emulated/0 /mnt/runtime/read/emulated/0 /mnt/runtime/write/emulated/0 /mnt/runtime/full/emulated/0 \
+  /mnt/media_rw /storage/usbdisk0 /storage/usbdisk1 \
+  /data/user/0/com.android.documentsui /data/user/0/$ROOT_PKG; do
+  echo "--- $path ---" >> "$F"
+  ls -ldZ "$path" >> "$F" 2>&1 || ls -ld "$path" >> "$F" 2>&1 || true
+  readlink -f "$path" >> "$F" 2>&1 || true
+  run_sh_to "$TIMEOUT_SECONDS" "$F" "ls -la '$path' | head -n 200"
+done
+run_sh_to "$TIMEOUT_SECONDS" "$F" "find /storage/emulated/0 -maxdepth 4 -print | head -n 5000"
+run_sh_to "$TIMEOUT_SECONDS" "$F" "find /data/adb -maxdepth 6 -print | head -n 5000"
+
+say "Copying relevant package and system state"
+for source in \
+  /data/system/packages.xml /data/system/packages.list /data/system/packages-stopped.xml \
+  /data/system/appops.xml /data/system/storage.xml /data/system/users/0.xml /data/system/users/userlist.xml \
+  /system/build.prop /vendor/build.prop /product/build.prop /odm/build.prop /system_ext/build.prop; do
+  copy_file_limited "$source" "$WORK/files$source"
+done
 copy_tree_limited /system/etc/permissions "$WORK/files/system/etc/permissions" 1
 copy_tree_limited /system/etc/default-permissions "$WORK/files/system/etc/default-permissions" 1
 copy_tree_limited /system/etc/sysconfig "$WORK/files/system/etc/sysconfig" 1
-copy_tree_limited /data/anr "$WORK/crash/data-anr" 1
+copy_tree_limited /data/anr "$WORK/crash/anr" 1
 copy_tree_limited /data/tombstones "$WORK/crash/tombstones" 1
 copy_tree_limited /data/system/dropbox "$WORK/crash/dropbox" 1
 copy_tree_limited /data/user/0/com.android.documentsui "$WORK/files/data/user/0/com.android.documentsui" 4
-copy_tree_limited /data/user/0/com.ts18.safprovider "$WORK/files/data/user/0/com.ts18.safprovider" 4
+copy_tree_limited /data/user/0/$ROOT_PKG "$WORK/files/data/user/0/$ROOT_PKG" 4
 
-F="$WORK/smoke/filesystem-smoke.txt"; section "$F" smoke
-for root in /storage/emulated/0/Download /storage/emulated/0/Documents /storage/usbdisk0 /storage/usbdisk1; do
-  [ -d "$root" ] || { echo "skip absent $root" >> "$F"; continue; }
-  SD="$root/TS18-SAF-SMOKE-$TS"; SF="$SD/smoke.txt"; SR="$SD/smoke-renamed.txt"
-  run_to "$TIMEOUT_SECONDS" "$F" mkdir -p "$SD"
-  run_sh_to "$TIMEOUT_SECONDS" "$F" "echo ts18-saf-v080 > '$SF'"
-  run_to "$TIMEOUT_SECONDS" "$F" cat "$SF"
-  run_to "$TIMEOUT_SECONDS" "$F" mv "$SF" "$SR"
-  run_to "$TIMEOUT_SECONDS" "$F" rm -f "$SR"
-  run_to "$TIMEOUT_SECONDS" "$F" rmdir "$SD"
-done
+F=$WORK/logs/logcat.txt
+section "$F" logs
+run_sh_to 45 "$F" "logcat -d -t 10000"
+run_sh_to "$TIMEOUT_SECONDS" "$F" "logcat -b events -d -t 5000"
+run_sh_to "$TIMEOUT_SECONDS" "$F" "logcat -b crash -d -t 2000"
+run_sh_to "$TIMEOUT_SECONDS" "$F" "dumpsys activity crashes"
+run_sh_to "$TIMEOUT_SECONDS" "$F" "dmesg | tail -n 3000"
 
-F="$WORK/logs/logs.txt"; section "$F" logs
-run_sh_to 45 "$F" "logcat -d -t 5000"
-run_sh_to 45 "$F" "logcat -b crash -d -t 1000"
-run_sh_to 45 "$F" "logcat -d -t 5000 | grep -iE 'DocumentsUI|TS18DocumentsProvider|safprovider|ExternalStorage|DownloadStorage|DocumentsProvider|ActivityInterceptor|AppManager|AndroidRuntime|FATAL EXCEPTION|SecurityException|Permission Denial|FileNotFoundException|NullPointerException|SQLite|roots|picker'"
-run_sh_to 45 "$F" "dmesg | tail -n 1000"
-run_to "$TIMEOUT_SECONDS" "$F" dumpsys activity crashes
-run_to "$TIMEOUT_SECONDS" "$F" dumpsys activity lastanr
-run_to "$TIMEOUT_SECONDS" "$F" dumpsys window windows
-run_to "$TIMEOUT_SECONDS" "$F" dumpsys activity activities
+F=$WORK/smoke/filesystem.txt
+section "$F" filesystem_smoke
+SMOKE=/storage/emulated/0/Download/TS18-SAF-SMOKE-$TS
+run_to "$TIMEOUT_SECONDS" "$F" mkdir -p "$SMOKE"
+run_sh_to "$TIMEOUT_SECONDS" "$F" "echo picker-smoke > '$SMOKE/source.txt'"
+run_to "$TIMEOUT_SECONDS" "$F" cat "$SMOKE/source.txt"
+run_to "$TIMEOUT_SECONDS" "$F" mv "$SMOKE/source.txt" "$SMOKE/renamed.txt"
+run_to "$TIMEOUT_SECONDS" "$F" rm -f "$SMOKE/renamed.txt"
+run_to "$TIMEOUT_SECONDS" "$F" rmdir "$SMOKE"
 
-cat > "$SUMMARY" <<EOF
-TS18 SAF v0.8.0 diagnostics
-Run: $RUN_ID
-Mode: $MODE
-Output: $WORK
-Archive: $OUT_BASE/$RUN_ID.tar.gz
-Build: $(getprop ro.build.display.id 2>/dev/null) SDK $(getprop ro.build.version.sdk 2>/dev/null)
-Identity: $(id 2>/dev/null)
+F=$WORK/smoke/root-helper.txt
+section "$F" root_helper_smoke
+ROOT_SMOKE=/storage/emulated/0/Download/TS18-ROOT-SMOKE-$TS
+safe_root_helper "$F" create /storage/emulated/0/Download "TS18-ROOT-SMOKE-$TS" dir
+safe_root_helper "$F" create "$ROOT_SMOKE" smoke.txt file
+run_sh_to "$TIMEOUT_SECONDS" "$F" "echo root-provider-smoke > '$ROOT_SMOKE/smoke.txt'"
+safe_root_helper "$F" stat "$ROOT_SMOKE/smoke.txt"
+safe_root_helper "$F" rename "$ROOT_SMOKE/smoke.txt" renamed.txt
+safe_root_helper "$F" delete "$ROOT_SMOKE/renamed.txt"
+safe_root_helper "$F" delete "$ROOT_SMOKE"
 
-Important files:
-- providers/content-queries.txt
-- providers/provider-registry.txt
-- packages/com.android.documentsui.txt
-- packages/com.ts18.safprovider.txt
-- packages/io.github.muntashirakon.AppManager.txt
-- storage/storage-manager.txt
-- paths/mounts-and-paths.txt
-- logs/logs.txt
-- smoke/filesystem-smoke.txt
-EOF
+{
+  echo "TS18 Full File Picker diagnostic summary"
+  echo "run=$RUN_ID"
+  echo "build=$(getprop ro.build.display.id 2>/dev/null)"
+  echo "sdk=$(getprop ro.build.version.sdk 2>/dev/null)"
+  echo "documentsui=$(pm path com.android.documentsui 2>/dev/null | head -n 1)"
+  echo "externalstorage=$(pm path com.android.externalstorage 2>/dev/null | head -n 1)"
+  echo "rootprovider=$(pm path $ROOT_PKG 2>/dev/null | head -n 1)"
+  echo "root_helper=$([ -x "$ROOT_HELPER" ] && echo present || echo missing)"
+  echo "output=$WORK"
+} > "$SUMMARY"
 
-say "Packing archive"
-ARCHIVE="$OUT_BASE/$RUN_ID.tar.gz"
-( cd "$OUT_BASE" && tar -czf "$ARCHIVE" "$RUN_ID" ) >> "$LOG" 2>&1 || say "WARN: archive packing failed"
-sha256sum "$ARCHIVE" > "$ARCHIVE.sha256" 2>/dev/null || true
-say "Archive: $ARCHIVE"
-say "Done"
-cat "$SUMMARY"
-exit 0
+ARCHIVE=$OUT_BASE/$RUN_ID.tar.gz
+say "Creating archive: $ARCHIVE"
+if tar -czf "$ARCHIVE" -C "$OUT_BASE" "$RUN_ID" >> "$LOG" 2>&1; then
+  if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then
+    sha256sum "$ARCHIVE" > "$ARCHIVE.sha256" 2>/dev/null || true
+    rm -rf "$WORK" 2>/dev/null || true
+    echo "DONE: $ARCHIVE"
+    exit 0
+  fi
+fi
+
+echo "WARN: archive could not be verified; uncompressed diagnostics remain at $WORK"
+exit 1
