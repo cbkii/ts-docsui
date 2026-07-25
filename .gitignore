@@ -1,5 +1,12 @@
 # Local build output
+.gradle/
+.build/
 dist/
+rootprovider/build/
+rootprovider/keystore/tsdocsui-root-provider.jks
+module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk
+__pycache__/
+*.pyc
 *.log
 *.tmp
 
