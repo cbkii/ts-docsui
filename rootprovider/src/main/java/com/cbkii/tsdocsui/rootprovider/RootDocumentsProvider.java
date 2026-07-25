@@ -37,6 +37,7 @@ public final class RootDocumentsProvider extends DocumentsProvider {
     private static final String ROOT_USB1 = "usb1";
     private static final String PREFS = "provider";
     private static final String TAG = "TS18RootProvider";
+    private static final String DEFAULT_STAGE_DIR = "/storage/emulated/0/.TS18-Root-Provider";
     private static final long DEFAULT_STAGE_LIMIT_BYTES = 256L * 1024L * 1024L;
 
     private static final String[] DEFAULT_ROOT_PROJECTION = new String[] {
@@ -248,18 +249,24 @@ public final class RootDocumentsProvider extends DocumentsProvider {
 
     private ParcelFileDescriptor openStaged(String sourcePath, String mode, boolean writable,
                                             CancellationSignal signal) throws FileNotFoundException {
-        Context context = getContext();
-        if (context == null) {
-            throw new FileNotFoundException("Provider context unavailable");
+        String configuredStageDir = prefs().getString("stageDir", DEFAULT_STAGE_DIR);
+        if (configuredStageDir == null
+                || !normalizePath(configuredStageDir).startsWith("/storage/emulated/0/")) {
+            configuredStageDir = DEFAULT_STAGE_DIR;
         }
-        File stageDir = new File(context.getCacheDir(), "open");
+        File stageDir = new File(configuredStageDir);
         if (!stageDir.isDirectory() && !stageDir.mkdirs()) {
-            throw new FileNotFoundException("Cannot create provider cache directory");
+            throw new FileNotFoundException("Cannot create shared provider staging directory");
         }
 
         final File stage;
         try {
             stage = File.createTempFile("root-", ".stage", stageDir);
+        } catch (IOException e) {
+            throw fileNotFound("Cannot create shared staging file", e);
+        }
+
+        try {
             RootEntry existing = RootShell.stat(sourcePath);
             if (existing != null && shouldStageExistingContent(mode)) {
                 RootShell.copyOut(sourcePath, stage, android.os.Process.myUid());
@@ -270,8 +277,10 @@ public final class RootDocumentsProvider extends DocumentsProvider {
             int parsedMode = ParcelFileDescriptor.parseMode(mode);
             return ParcelFileDescriptor.open(stage, parsedMode, closeHandler, error -> {
                 try {
-                    if (writable) {
+                    if (writable && error == null) {
                         RootShell.copyIn(stage, sourcePath);
+                    } else if (writable) {
+                        Log.w(TAG, "Discarding staged write after client close error for " + sourcePath, error);
                     }
                 } catch (IOException failure) {
                     Log.e(TAG, "Failed to copy staged root write back to " + sourcePath, failure);
@@ -281,6 +290,8 @@ public final class RootDocumentsProvider extends DocumentsProvider {
                 }
             });
         } catch (IOException | RuntimeException e) {
+            //noinspection ResultOfMethodCallIgnored
+            stage.delete();
             throw fileNotFound("Open failed", e);
         }
     }
