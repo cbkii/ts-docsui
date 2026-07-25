@@ -1,6 +1,6 @@
-id=ts18_docsui_saf
-name=TS18 SAF DocumentsUI File Picker
-version=v0.8.0
-versionCode=080
+id=ts18_documentsui_saf_full
+name=TS18 Full File Picker
+version=v1.0.0
+versionCode=100
 author=cbkii
-description=TS18 Android 10 SAF AOSP DocumentsUI, MiXplorer fallback
+description=Shows all internal storage and adds a Magisk-root file provider for the full device.

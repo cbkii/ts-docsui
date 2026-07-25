@@ -1,295 +1,440 @@
 #!/system/bin/sh
-# TS18 SAF service: no-crash picker repair.
-# - Keeps stable DocumentsUI overlay.
-# - Disables invalid TS18LocalDocumentsProvider.
-# - Keeps ExternalStorageProvider if present but hides advanced/broken roots by DocumentsUI prefs.
-# - Enables MiXplorer DocumentsProvider as existing broad-access fallback.
+# TS18 Full File Picker late-start service.
+# Repairs DocumentsUI, exposes internal storage, and enables the bundled root provider.
 
 MODDIR=${0%/*}
+STATE_DIR=/data/adb/ts18-documentsui-saf
 CFG=/data/adb/ts18-documentsui-saf.conf
-LOGDIR=/data/adb/ts18-documentsui-saf/logs
-LOG=$LOGDIR/service-v080.log
-mkdir -p "$LOGDIR" 2>/dev/null || true
+LOGDIR=$STATE_DIR/logs
+LOG=$LOGDIR/service-v100.log
+HELPER_SRC=$MODDIR/tools/rootfs-helper.sh
+HELPER_DST=$STATE_DIR/rootfs-helper.sh
+ROOT_PKG=com.cbkii.tsdocsui.rootprovider
+ROOT_COMPONENT=$ROOT_PKG/.RootDocumentsProvider
+ROOT_AUTH=com.cbkii.tsdocsui.root.documents
 
 TARGET_USER=0
 BOOT_WAIT_ATTEMPTS=45
 BOOT_WAIT_SECONDS=2
 FIX_ENABLE_AOSP_DOCUMENTSUI=1
 FIX_ENABLE_DOCUMENTSUI_COMPONENTS=1
-FIX_DISABLE_TS18_LOCAL_SAF_PROVIDER=1
-FIX_ENABLE_TS18_LOCAL_SAF_PROVIDER=0
-FIX_ENABLE_TS18_LOCAL_SAF_PROVIDER_COMPONENTS=0
+FIX_DISABLE_GOOGLE_DOCUMENTSUI=1
 FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR=1
-FIX_DISABLE_GOOGLE_AML_DOCUMENTSUI=1
-FIX_REMOVE_USER_DOCUMENTSUI_SHADOWS=0
-FIX_TOUCH_CANONICAL_EXTERNALSTORAGE_PROVIDER=1
-FIX_ENABLE_CANONICAL_EXTERNALSTORAGE_PROVIDER=1
-FIX_DISABLE_EXTERNALSTORAGE_TEST_PROVIDER=1
-FIX_HIDE_BROKEN_EXTERNAL_ADVANCED_ROOTS=1
-FIX_DISABLE_CANONICAL_EXTERNALSTORAGE_PROVIDER=0
-FIX_FORCE_STOP_EXTERNALSTORAGE=0
-FIX_CLEAR_EXTERNALSTORAGE_DATA=0
-FIX_ENABLE_MIXPLORER_PROVIDER=1
-FIX_GRANT_MIXPLORER_STORAGE_PERMS=1
-FIX_GRANT_DOCUMENTSUI_RUNTIME_PERMS=1
-FIX_SET_DOCUMENTSUI_APPOPS=1
-FIX_SET_LEGACY_STORAGE_APPOPS=1
-FIX_FIX_APP_DATA_OWNERSHIP=1
-FIX_SET_DOCUMENTSUI_DEVICE_ROOT_PREFS=1
-FIX_RESET_DOCUMENTSUI_ROOTS_CACHE=1
+FIX_ENABLE_EXTERNAL_STORAGE_PROVIDER=1
+FIX_DISABLE_EXTERNAL_STORAGE_TEST_PROVIDER=1
+EXTERNAL_ROOT_MODE=auto
+FIX_ENABLE_ROOT_FILE_PROVIDER=1
+FIX_AUTO_GRANT_ROOT_PROVIDER=1
+ROOT_PROVIDER_SHOW_INTERNAL=1
+ROOT_PROVIDER_SHOW_DEVICE=1
+ROOT_PROVIDER_SHOW_USB=1
+ROOT_PROVIDER_ALLOW_CREATE=1
+ROOT_PROVIDER_ALLOW_WRITE=1
+ROOT_PROVIDER_ALLOW_RENAME=1
+ROOT_PROVIDER_ALLOW_DELETE=1
+ROOT_PROVIDER_STAGE_DIR=/storage/emulated/0/.TS18-Root-Provider
+ROOT_PROVIDER_STAGE_LIMIT_BYTES=268435456
+FIX_ENABLE_MIXPLORER_PROVIDER=0
+FIX_GRANT_MIXPLORER_STORAGE_PERMS=0
+FIX_GRANT_STORAGE_ACCESS=1
 FIX_CREATE_STANDARD_INTERNAL_DIRS=1
-FIX_FORCE_STOP_DOCUMENTSUI=1
-FIX_PROVIDER_WARMUP_QUERIES=1
+FIX_REFRESH_PICKER_ON_CHANGE=1
+FIX_WARM_UP_PROVIDERS=1
 DIAG_AUTO_RUN_ON_BOOT=0
+DIAG_OUTPUT_ROOT=/storage/emulated/0/Download/TS18-SAF-Diagnostics
+DIAG_COPY_RELEVANT_APKS=1
+DIAG_COPY_ALL_APKS=0
+DIAG_MAX_COPY_BYTES=52428800
+
+mkdir -p "$LOGDIR" 2>/dev/null || exit 0
+if [ -f "$LOG" ]; then
+  size=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+  case "$size" in ''|*[!0-9]*) size=0 ;; esac
+  if [ "$size" -gt 524288 ]; then
+    mv -f "$LOG" "$LOG.previous" 2>/dev/null || true
+  fi
+fi
+
+log() {
+  echo "[$(date '+%F %T' 2>/dev/null || echo time)] $*" >> "$LOG"
+}
+
+is_on() {
+  case "$1" in 1|true|TRUE|yes|YES|on|ON|enabled|ENABLED) return 0 ;; *) return 1 ;; esac
+}
 
 is_allowed_key() {
   case "$1" in
-    TARGET_USER|BOOT_WAIT_ATTEMPTS|BOOT_WAIT_SECONDS|FIX_ENABLE_AOSP_DOCUMENTSUI|FIX_ENABLE_DOCUMENTSUI_COMPONENTS|FIX_DISABLE_TS18_LOCAL_SAF_PROVIDER|FIX_ENABLE_TS18_LOCAL_SAF_PROVIDER|FIX_ENABLE_TS18_LOCAL_SAF_PROVIDER_COMPONENTS|FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR|FIX_DISABLE_GOOGLE_AML_DOCUMENTSUI|FIX_REMOVE_USER_DOCUMENTSUI_SHADOWS|FIX_TOUCH_CANONICAL_EXTERNALSTORAGE_PROVIDER|FIX_ENABLE_CANONICAL_EXTERNALSTORAGE_PROVIDER|FIX_DISABLE_EXTERNALSTORAGE_TEST_PROVIDER|FIX_HIDE_BROKEN_EXTERNAL_ADVANCED_ROOTS|FIX_DISABLE_CANONICAL_EXTERNALSTORAGE_PROVIDER|FIX_FORCE_STOP_EXTERNALSTORAGE|FIX_CLEAR_EXTERNALSTORAGE_DATA|FIX_ENABLE_MIXPLORER_PROVIDER|FIX_GRANT_MIXPLORER_STORAGE_PERMS|FIX_GRANT_DOCUMENTSUI_RUNTIME_PERMS|FIX_SET_DOCUMENTSUI_APPOPS|FIX_SET_LEGACY_STORAGE_APPOPS|FIX_FIX_APP_DATA_OWNERSHIP|FIX_SET_DOCUMENTSUI_DEVICE_ROOT_PREFS|FIX_RESET_DOCUMENTSUI_ROOTS_CACHE|FIX_CREATE_STANDARD_INTERNAL_DIRS|FIX_FORCE_STOP_DOCUMENTSUI|FIX_PROVIDER_WARMUP_QUERIES|DIAG_AUTO_RUN_ON_BOOT|DIAG_OUTPUT_ROOT|DIAG_COPY_RELEVANT_APKS|DIAG_COPY_ALL_APKS|DIAG_MAX_COPY_BYTES) return 0 ;;
+    TARGET_USER|BOOT_WAIT_ATTEMPTS|BOOT_WAIT_SECONDS|FIX_ENABLE_AOSP_DOCUMENTSUI|FIX_ENABLE_DOCUMENTSUI_COMPONENTS|FIX_DISABLE_GOOGLE_DOCUMENTSUI|FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR|FIX_ENABLE_EXTERNAL_STORAGE_PROVIDER|FIX_DISABLE_EXTERNAL_STORAGE_TEST_PROVIDER|EXTERNAL_ROOT_MODE|FIX_ENABLE_ROOT_FILE_PROVIDER|FIX_AUTO_GRANT_ROOT_PROVIDER|ROOT_PROVIDER_SHOW_INTERNAL|ROOT_PROVIDER_SHOW_DEVICE|ROOT_PROVIDER_SHOW_USB|ROOT_PROVIDER_ALLOW_CREATE|ROOT_PROVIDER_ALLOW_WRITE|ROOT_PROVIDER_ALLOW_RENAME|ROOT_PROVIDER_ALLOW_DELETE|ROOT_PROVIDER_STAGE_DIR|ROOT_PROVIDER_STAGE_LIMIT_BYTES|FIX_ENABLE_MIXPLORER_PROVIDER|FIX_GRANT_MIXPLORER_STORAGE_PERMS|FIX_GRANT_STORAGE_ACCESS|FIX_CREATE_STANDARD_INTERNAL_DIRS|FIX_REFRESH_PICKER_ON_CHANGE|FIX_WARM_UP_PROVIDERS|DIAG_AUTO_RUN_ON_BOOT|DIAG_OUTPUT_ROOT|DIAG_COPY_RELEVANT_APKS|DIAG_COPY_ALL_APKS|DIAG_MAX_COPY_BYTES) return 0 ;;
     *) return 1 ;;
   esac
 }
-valid_val() { case "$1" in ''|*[!A-Za-z0-9_./:-]*) return 1 ;; *) return 0 ;; esac; }
+
+valid_value() {
+  case "$1" in ''|*[!A-Za-z0-9_./:-]*) return 1 ;; *) return 0 ;; esac
+}
+
 load_config() {
   if [ ! -f "$CFG" ] && [ -f "$MODDIR/config.default" ]; then
     cp -f "$MODDIR/config.default" "$CFG" 2>/dev/null || true
+    chmod 0644 "$CFG" 2>/dev/null || true
   fi
   [ -f "$CFG" ] || return 0
-  while IFS='=' read -r key val || [ -n "$key" ]; do
+  while IFS='=' read -r key value || [ -n "$key" ]; do
     case "$key" in ''|'#'*) continue ;; esac
     is_allowed_key "$key" || continue
-    valid_val "$val" || continue
-    eval "$key=\$val"
+    valid_value "$value" || continue
+    eval "$key=\$value"
   done < "$CFG"
 }
-is_on() { case "$1" in 1|true|TRUE|yes|YES|on|ON|enabled|ENABLED) return 0 ;; *) return 1 ;; esac; }
-log() { echo "[$(date '+%F %T' 2>/dev/null || echo time)] $*" >> "$LOG"; }
-pkg_exists() { pm path "$1" >/dev/null 2>&1; }
 
-pm_enable_pkg() {
-  p="$1"
-  pkg_exists "$p" || { log "package absent: $p"; return 0; }
-  pm install-existing --user "$TARGET_USER" "$p" >>"$LOG" 2>&1 || true
-  pm enable --user "$TARGET_USER" "$p" >>"$LOG" 2>&1 || true
-  log "enabled package: $p"
-}
-pm_disable_pkg() {
-  p="$1"
-  pkg_exists "$p" || { log "package absent for disable: $p"; return 0; }
-  pm disable-user --user "$TARGET_USER" "$p" >>"$LOG" 2>&1 || true
-  log "disabled package: $p"
-}
-enable_comp() {
-  c="$1"
-  pm enable --user "$TARGET_USER" "$c" >>"$LOG" 2>&1 || true
-  log "enable component attempted: $c"
-}
-disable_comp() {
-  c="$1"
-  pm disable --user "$TARGET_USER" "$c" >>"$LOG" 2>&1 || true
-  pm disable-user --user "$TARGET_USER" "$c" >>"$LOG" 2>&1 || true
-  log "disable component attempted: $c"
-}
-
-pkg_dump_has() { p="$1"; needle="$2"; pm dump "$p" 2>/dev/null | grep -Fq "$needle"; }
-grant_if_requested() {
-  p="$1"; perm="$2"
-  pkg_exists "$p" || return 0
-  if pkg_dump_has "$p" "$perm"; then
-    pm grant "$p" "$perm" >>"$LOG" 2>&1 || true
-    log "grant attempted: $p $perm"
-  else
-    log "skip grant not requested: $p $perm"
-  fi
-}
-appop_known() {
-  op="$1"
-  appops get android >/dev/null 2>&1 || true
-  appops set android "$op" allow >/dev/null 2>&1
-  rc=$?
-  # Do not rely on setting android package; fallback string check via appops help where available.
-  if [ "$rc" = "0" ]; then return 0; fi
-  appops set android "$op" default >/dev/null 2>&1 || true
-  appops set com.android.shell "$op" allow >/dev/null 2>&1 && { appops set com.android.shell "$op" default >/dev/null 2>&1 || true; return 0; }
-  return 1
-}
-set_appop_safe() {
-  p="$1"; op="$2"
-  pkg_exists "$p" || return 0
-  case "$op" in MANAGE_EXTERNAL_STORAGE|NO_ISOLATED_STORAGE) log "skip appop unsupported on Android 10 target: $op"; return 0 ;; esac
-  appops set "$p" "$op" allow >>"$LOG" 2>&1 || true
-  log "appop attempted: $p $op"
+pkg_exists() {
+  pm path "$1" >/dev/null 2>&1
 }
 
 pkg_uid() {
-  p="$1"
-  cmd package list packages -U "$p" 2>/dev/null | sed -n 's/.* uid://p' | head -n 1
-}
-fix_owner() {
-  p="$1"; uid="$(pkg_uid "$p")"
-  case "$uid" in ''|*[!0-9]*) log "no uid for $p"; return 0 ;; esac
-  for d in "/data/user/$TARGET_USER/$p" "/data/data/$p" "/data/user_de/$TARGET_USER/$p"; do
-    [ -e "$d" ] || continue
-    chown -R "$uid:$uid" "$d" >>"$LOG" 2>&1 || true
-    restorecon -RF "$d" >>"$LOG" 2>&1 || true
-    log "owner fixed: $d uid=$uid"
-  done
+  cmd package list packages -U "$1" 2>/dev/null | sed -n 's/.* uid://p' | head -n 1
 }
 
-write_docsui_prefs() {
-  p=com.android.documentsui
-  uid="$(pkg_uid "$p")"
-  case "$uid" in ''|*[!0-9]*) uid=0 ;; esac
-  if is_on "$FIX_HIDE_BROKEN_EXTERNAL_ADVANCED_ROOTS"; then
-    include=false; show=false; adv=false; device=false
-  else
-    include=true; show=true; adv=true; device=true
+enable_pkg() {
+  pkg=$1
+  pkg_exists "$pkg" || { log "package absent: $pkg"; return 1; }
+  pm install-existing --user "$TARGET_USER" "$pkg" >> "$LOG" 2>&1 || true
+  pm enable --user "$TARGET_USER" "$pkg" >> "$LOG" 2>&1 || true
+  log "enabled package: $pkg"
+  return 0
+}
+
+enable_component() {
+  component=$1
+  package=${component%%/*}
+  pkg_exists "$package" || { log "component package absent: $component"; return 1; }
+  pm enable --user "$TARGET_USER" "$component" >> "$LOG" 2>&1 || true
+  log "enabled component: $component"
+  return 0
+}
+
+disable_component() {
+  component=$1
+  package=${component%%/*}
+  pkg_exists "$package" || { log "component package absent for disable: $component"; return 0; }
+  pm disable-user --user "$TARGET_USER" "$component" >> "$LOG" 2>&1 || \
+    pm disable --user "$TARGET_USER" "$component" >> "$LOG" 2>&1 || true
+  log "disabled component: $component"
+}
+
+disable_pkg() {
+  pkg=$1
+  pkg_exists "$pkg" || return 0
+  pm disable-user --user "$TARGET_USER" "$pkg" >> "$LOG" 2>&1 || true
+  log "disabled package: $pkg"
+}
+
+grant_if_requested() {
+  pkg=$1
+  permission=$2
+  pkg_exists "$pkg" || return 0
+  if pm dump "$pkg" 2>/dev/null | grep -Fq "$permission"; then
+    pm grant "$pkg" "$permission" >> "$LOG" 2>&1 || true
+    log "permission grant attempted: $pkg $permission"
   fi
-  for base in "/data/user/$TARGET_USER/$p" "/data/data/$p"; do
-    [ -d "$base" ] || mkdir -p "$base" 2>/dev/null || true
-    mkdir -p "$base/shared_prefs" 2>/dev/null || true
-    for fn in com.android.documentsui_preferences.xml com.android.documentsui.xml DocumentsUI.xml; do
-      f="$base/shared_prefs/$fn"
-      [ -f "$f" ] && cp -f "$f" "$f.ts18bak.$(date +%Y%m%d%H%M%S 2>/dev/null || echo bak)" 2>/dev/null || true
-      cat > "$f" <<EOPREF
+}
+
+set_appop() {
+  pkg=$1
+  operation=$2
+  pkg_exists "$pkg" || return 0
+  appops set "$pkg" "$operation" allow >> "$LOG" 2>&1 || true
+  log "app-op attempted: $pkg $operation"
+}
+
+find_timeout() {
+  if [ -x /data/adb/magisk/busybox ]; then
+    echo "/data/adb/magisk/busybox timeout"
+  elif command -v timeout >/dev/null 2>&1; then
+    echo timeout
+  elif command -v busybox >/dev/null 2>&1; then
+    echo "busybox timeout"
+  else
+    echo ""
+  fi
+}
+
+TIMEOUT_CMD=$(find_timeout)
+run_bounded_sh() {
+  seconds=$1
+  shift
+  command_text=$*
+  if [ -n "$TIMEOUT_CMD" ]; then
+    # shellcheck disable=SC2086
+    $TIMEOUT_CMD "$seconds" sh -c "$command_text"
+  else
+    sh -c "$command_text"
+  fi
+}
+
+bool_xml() {
+  if is_on "$1"; then echo true; else echo false; fi
+}
+
+prepare_stage_dir() {
+  case "$ROOT_PROVIDER_STAGE_DIR" in
+    /storage/emulated/0/*) ;;
+    *)
+      log "invalid root provider staging path; using shared-storage default"
+      ROOT_PROVIDER_STAGE_DIR=/storage/emulated/0/.TS18-Root-Provider
+      ;;
+  esac
+  mkdir -p "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1 || return 1
+  chmod 0777 "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1 || true
+  find "$ROOT_PROVIDER_STAGE_DIR" -maxdepth 1 -type f -name 'root-*.stage' -mmin +60 -delete >> "$LOG" 2>&1 || true
+  log "root provider staging directory ready: $ROOT_PROVIDER_STAGE_DIR"
+}
+
+write_root_provider_prefs() {
+  uid=$(pkg_uid "$ROOT_PKG")
+  case "$uid" in ''|*[!0-9]*) log "root provider UID unavailable"; return 1 ;; esac
+  base=/data/user/$TARGET_USER/$ROOT_PKG
+  prefs_dir=$base/shared_prefs
+  prefs_file=$prefs_dir/provider.xml
+  mkdir -p "$prefs_dir" 2>/dev/null || { log "cannot create root provider prefs"; return 1; }
+  cat > "$prefs_file" <<EOPREF
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
-    <boolean name="includeDeviceRoot" value="$include" />
-    <boolean name="showAdvanced" value="$show" />
-    <boolean name="advancedDevices" value="$adv" />
-    <boolean name="showDeviceStorageOption" value="$device" />
+    <boolean name="showInternal" value="$(bool_xml "$ROOT_PROVIDER_SHOW_INTERNAL")" />
+    <boolean name="showDevice" value="$(bool_xml "$ROOT_PROVIDER_SHOW_DEVICE")" />
+    <boolean name="showUsb" value="$(bool_xml "$ROOT_PROVIDER_SHOW_USB")" />
+    <boolean name="allowCreate" value="$(bool_xml "$ROOT_PROVIDER_ALLOW_CREATE")" />
+    <boolean name="allowWrite" value="$(bool_xml "$ROOT_PROVIDER_ALLOW_WRITE")" />
+    <boolean name="allowRename" value="$(bool_xml "$ROOT_PROVIDER_ALLOW_RENAME")" />
+    <boolean name="allowDelete" value="$(bool_xml "$ROOT_PROVIDER_ALLOW_DELETE")" />
+    <string name="stageDir">$ROOT_PROVIDER_STAGE_DIR</string>
+    <long name="stageLimitBytes" value="$ROOT_PROVIDER_STAGE_LIMIT_BYTES" />
+</map>
+EOPREF
+  chown "$uid:$uid" "$prefs_file" 2>/dev/null || true
+  chmod 0600 "$prefs_file" 2>/dev/null || true
+  chown "$uid:$uid" "$prefs_dir" "$base" 2>/dev/null || true
+  restorecon -RF "$base" >/dev/null 2>&1 || true
+  log "wrote root provider preferences uid=$uid"
+}
+
+find_magisk_bin() {
+  if command -v magisk >/dev/null 2>&1; then
+    command -v magisk
+  elif [ -x /data/adb/magisk/magisk ]; then
+    echo /data/adb/magisk/magisk
+  elif [ -x /sbin/magisk ]; then
+    echo /sbin/magisk
+  else
+    echo ""
+  fi
+}
+
+auto_grant_root() {
+  is_on "$FIX_AUTO_GRANT_ROOT_PROVIDER" || return 0
+  uid=$(pkg_uid "$ROOT_PKG")
+  case "$uid" in ''|*[!0-9]*) log "cannot auto-grant root: UID unavailable"; return 1 ;; esac
+  magisk_bin=$(find_magisk_bin)
+  [ -n "$magisk_bin" ] || { log "cannot auto-grant root: magisk command missing"; return 1; }
+  sql="REPLACE INTO policies (uid, policy, until, logging, notification) VALUES ($uid, 2, 0, 1, 0);"
+  if "$magisk_bin" --sqlite "$sql" >> "$LOG" 2>&1; then
+    log "Magisk root policy granted to $ROOT_PKG uid=$uid"
+    return 0
+  fi
+  log "Magisk root policy grant failed; Magisk may show a normal root prompt"
+  return 1
+}
+
+install_helper() {
+  [ -f "$HELPER_SRC" ] || { log "root helper source missing: $HELPER_SRC"; return 1; }
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  cp -f "$HELPER_SRC" "$HELPER_DST" >> "$LOG" 2>&1 || return 1
+  chown 0:0 "$HELPER_DST" 2>/dev/null || true
+  chmod 0755 "$HELPER_DST" 2>/dev/null || true
+  restorecon "$HELPER_DST" >/dev/null 2>&1 || true
+  log "installed root helper: $HELPER_DST"
+  return 0
+}
+
+external_provider_healthy() {
+  pkg_exists com.android.externalstorage || return 1
+  roots=$(run_bounded_sh 8 "content query --uri content://com.android.externalstorage.documents/root --user '$TARGET_USER'" 2>&1)
+  echo "$roots" >> "$LOG"
+  echo "$roots" | grep -q 'root_id=primary' || return 1
+  children=$(run_bounded_sh 10 "content query --uri content://com.android.externalstorage.documents/document/primary%3A/children --user '$TARGET_USER'" 2>&1)
+  echo "$children" >> "$LOG"
+  echo "$children" | grep -q 'document_id=primary:' || return 1
+  return 0
+}
+
+write_documentsui_prefs() {
+  show=$1
+  uid=$(pkg_uid com.android.documentsui)
+  case "$uid" in ''|*[!0-9]*) log "DocumentsUI UID unavailable"; return 1 ;; esac
+  if [ "$show" = 1 ]; then value=true; else value=false; fi
+  for base in "/data/user/$TARGET_USER/com.android.documentsui" "/data/data/com.android.documentsui"; do
+    mkdir -p "$base/shared_prefs" 2>/dev/null || continue
+    for name in com.android.documentsui_preferences.xml com.android.documentsui.xml DocumentsUI.xml; do
+      file=$base/shared_prefs/$name
+      cat > "$file" <<EOPREF
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <boolean name="includeDeviceRoot" value="$value" />
+    <boolean name="showAdvanced" value="$value" />
+    <boolean name="advancedDevices" value="$value" />
+    <boolean name="showDeviceStorageOption" value="$value" />
     <boolean name="fileSize" value="true" />
 </map>
 EOPREF
-      chown "$uid:$uid" "$f" 2>/dev/null || true
-      chmod 0600 "$f" 2>/dev/null || true
-      restorecon "$f" >/dev/null 2>&1 || true
-      log "wrote DocumentsUI pref: $f uid=$uid hideAdvanced=$FIX_HIDE_BROKEN_EXTERNAL_ADVANCED_ROOTS"
+      chown "$uid:$uid" "$file" 2>/dev/null || true
+      chmod 0600 "$file" 2>/dev/null || true
     done
-    chown -R "$uid:$uid" "$base/shared_prefs" 2>/dev/null || true
+    chown "$uid:$uid" "$base/shared_prefs" 2>/dev/null || true
     restorecon -RF "$base" >/dev/null 2>&1 || true
   done
+  log "DocumentsUI internal roots visible=$show"
 }
 
-reset_docsui_cache() {
+refresh_picker_once() {
+  show=$1
+  is_on "$FIX_REFRESH_PICKER_ON_CHANGE" || return 0
+  config_hash=$(sha256sum "$CFG" 2>/dev/null | awk '{print $1}')
+  [ -n "$config_hash" ] || config_hash=unknown
+  desired="v1.0.0:$show:$config_hash"
+  current=$(cat "$STATE_DIR/applied-state" 2>/dev/null || true)
+  [ "$current" = "$desired" ] && { log "picker state already current"; return 0; }
+
   for base in "/data/user/$TARGET_USER/com.android.documentsui" "/data/data/com.android.documentsui"; do
     [ -d "$base" ] || continue
-    mkdir -p "$base/databases" "$base/cache" 2>/dev/null || true
-    for pattern in roots.db roots.db-journal roots.db-wal roots.db-shm lastAccessed.db lastAccessed.db-* lastAccess.db lastAccess.db-* pickCount.db pickCount.db-*; do
-      rm -f "$base/databases/$pattern" 2>/dev/null || true
-    done
+    rm -f "$base"/databases/roots.db* "$base"/databases/lastAccess.db* \
+      "$base"/databases/lastAccessed.db* "$base"/databases/pickCount.db* 2>/dev/null || true
     find "$base/cache" -maxdepth 1 -type f -name '*root*' -delete 2>/dev/null || true
-    log "reset DocumentsUI cache/db: $base"
   done
+  am force-stop com.android.documentsui >> "$LOG" 2>&1 || true
+  am force-stop "$ROOT_PKG" >> "$LOG" 2>&1 || true
+  echo "$desired" > "$STATE_DIR/applied-state" 2>/dev/null || true
+  log "picker cache refreshed for new module/config state"
 }
 
-content_query() {
-  uri="$1"
-  content query --uri "$uri" --user "$TARGET_USER" >>"$LOG" 2>&1 || content query --uri "$uri" >>"$LOG" 2>&1 || true
+find_mixplorer_package() {
+  for package in com.mixplorer.silver com.mixplorer; do
+    if pkg_exists "$package"; then
+      echo "$package"
+      return 0
+    fi
+  done
+  echo ""
 }
 
 load_config
 case "$TARGET_USER" in ''|*[!0-9]*) TARGET_USER=0 ;; esac
-{
-  echo "===== TS18 SAF v0.8.0 service $(date '+%F %T %z' 2>/dev/null || echo unknown) ====="
-  echo "module=$MODDIR"
-  echo "user=$TARGET_USER"
-  echo "build=$(getprop ro.build.display.id 2>/dev/null) sdk=$(getprop ro.build.version.sdk 2>/dev/null)"
-} >> "$LOG"
+case "$BOOT_WAIT_ATTEMPTS" in ''|*[!0-9]*) BOOT_WAIT_ATTEMPTS=45 ;; esac
+case "$BOOT_WAIT_SECONDS" in ''|*[!0-9]*) BOOT_WAIT_SECONDS=2 ;; esac
+case "$ROOT_PROVIDER_STAGE_LIMIT_BYTES" in ''|*[!0-9]*) ROOT_PROVIDER_STAGE_LIMIT_BYTES=268435456 ;; esac
+case "$ROOT_PROVIDER_STAGE_DIR" in /storage/emulated/0/*) ;; *) ROOT_PROVIDER_STAGE_DIR=/storage/emulated/0/.TS18-Root-Provider ;; esac
 
-i=0
-while [ "$i" -lt "$BOOT_WAIT_ATTEMPTS" ]; do
-  [ "$(getprop sys.boot_completed 2>/dev/null)" = "1" ] && break
-  i=$((i+1)); sleep "$BOOT_WAIT_SECONDS"
+log "===== TS18 Full File Picker v1.0.0 start ====="
+log "build=$(getprop ro.build.display.id 2>/dev/null) sdk=$(getprop ro.build.version.sdk 2>/dev/null) user=$TARGET_USER"
+
+attempt=0
+while [ "$attempt" -lt "$BOOT_WAIT_ATTEMPTS" ]; do
+  [ "$(getprop sys.boot_completed 2>/dev/null)" = 1 ] && break
+  attempt=$((attempt + 1))
+  sleep "$BOOT_WAIT_SECONDS"
 done
-log "boot wait complete attempt=$i"
+log "boot wait completed after $attempt checks"
 
-is_on "$FIX_ENABLE_AOSP_DOCUMENTSUI" && pm_enable_pkg com.android.documentsui
-if is_on "$FIX_DISABLE_GOOGLE_AML_DOCUMENTSUI"; then pm_disable_pkg com.google.android.documentsui; fi
+if is_on "$FIX_ENABLE_AOSP_DOCUMENTSUI"; then
+  enable_pkg com.android.documentsui
+fi
 if is_on "$FIX_ENABLE_DOCUMENTSUI_COMPONENTS"; then
-  enable_comp com.android.documentsui/.picker.PickActivity
-  enable_comp com.android.documentsui/.files.FilesActivity
-  enable_comp com.android.documentsui/.LauncherActivity
+  enable_component com.android.documentsui/.picker.PickActivity
+  enable_component com.android.documentsui/.files.FilesActivity
+  enable_component com.android.documentsui/.LauncherActivity
 fi
-
-# v2.2 provider APK was invalid on TS18; always allow disabling stale package/component.
-if is_on "$FIX_DISABLE_TS18_LOCAL_SAF_PROVIDER"; then
-  disable_comp com.ts18.safprovider/.TS18DocumentsProvider
-  pm_disable_pkg com.ts18.safprovider
-  pm clear --user "$TARGET_USER" com.ts18.safprovider >>"$LOG" 2>&1 || true
+if is_on "$FIX_DISABLE_GOOGLE_DOCUMENTSUI"; then
+  disable_pkg com.google.android.documentsui
 fi
-
-if is_on "$FIX_TOUCH_CANONICAL_EXTERNALSTORAGE_PROVIDER" && pkg_exists com.android.externalstorage; then
-  if is_on "$FIX_DISABLE_CANONICAL_EXTERNALSTORAGE_PROVIDER"; then
-    disable_comp com.android.externalstorage/.ExternalStorageProvider
-  elif is_on "$FIX_ENABLE_CANONICAL_EXTERNALSTORAGE_PROVIDER"; then
-    pm_enable_pkg com.android.externalstorage
-    enable_comp com.android.externalstorage/.ExternalStorageProvider
-  fi
-  if is_on "$FIX_DISABLE_EXTERNALSTORAGE_TEST_PROVIDER"; then
-    disable_comp com.android.externalstorage/.TestDocumentsProvider
-  fi
-fi
-
-if is_on "$FIX_ENABLE_MIXPLORER_PROVIDER" && pkg_exists com.mixplorer; then
-  pm_enable_pkg com.mixplorer
-  enable_comp com.mixplorer/.providers.DocProvider
-fi
-
 if is_on "$FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR"; then
-  disable_comp io.github.muntashirakon.AppManager/.intercept.ActivityInterceptor
-  disable_comp io.github.muntashirakon.AppManager/io.github.muntashirakon.AppManager.intercept.ActivityInterceptor
+  disable_component io.github.muntashirakon.AppManager/.intercept.ActivityInterceptor
+  disable_component io.github.muntashirakon.AppManager/io.github.muntashirakon.AppManager.intercept.ActivityInterceptor
 fi
 
-if is_on "$FIX_GRANT_DOCUMENTSUI_RUNTIME_PERMS"; then
-  for perm in android.permission.READ_EXTERNAL_STORAGE android.permission.WRITE_EXTERNAL_STORAGE android.permission.ACCESS_MEDIA_LOCATION; do
-    grant_if_requested com.android.documentsui "$perm"
-  done
+if is_on "$FIX_ENABLE_EXTERNAL_STORAGE_PROVIDER"; then
+  enable_pkg com.android.externalstorage
+  enable_component com.android.externalstorage/.ExternalStorageProvider
+  enable_component com.android.externalstorage/.MountReceiver
 fi
-if is_on "$FIX_GRANT_MIXPLORER_STORAGE_PERMS"; then
-  for perm in android.permission.READ_EXTERNAL_STORAGE android.permission.WRITE_EXTERNAL_STORAGE android.permission.ACCESS_MEDIA_LOCATION; do
-    grant_if_requested com.mixplorer "$perm"
-  done
-fi
-if is_on "$FIX_SET_DOCUMENTSUI_APPOPS"; then
-  for op in READ_EXTERNAL_STORAGE WRITE_EXTERNAL_STORAGE LEGACY_STORAGE; do
-    set_appop_safe com.android.documentsui "$op"
-  done
-fi
-if is_on "$FIX_GRANT_MIXPLORER_STORAGE_PERMS"; then
-  for op in READ_EXTERNAL_STORAGE WRITE_EXTERNAL_STORAGE LEGACY_STORAGE; do
-    set_appop_safe com.mixplorer "$op"
-  done
+if is_on "$FIX_DISABLE_EXTERNAL_STORAGE_TEST_PROVIDER"; then
+  disable_component com.android.externalstorage/.TestDocumentsProvider
 fi
 
-if is_on "$FIX_FIX_APP_DATA_OWNERSHIP"; then
-  fix_owner com.android.documentsui
-  fix_owner com.mixplorer
+if is_on "$FIX_ENABLE_ROOT_FILE_PROVIDER"; then
+  install_helper
+  enable_pkg "$ROOT_PKG"
+  prepare_stage_dir
+  auto_grant_root
+  write_root_provider_prefs
+  enable_component "$ROOT_COMPONENT"
+else
+  disable_component "$ROOT_COMPONENT"
 fi
-is_on "$FIX_SET_DOCUMENTSUI_DEVICE_ROOT_PREFS" && write_docsui_prefs
-is_on "$FIX_RESET_DOCUMENTSUI_ROOTS_CACHE" && reset_docsui_cache
+
+MIXPLORER_PKG=$(find_mixplorer_package)
+if is_on "$FIX_ENABLE_MIXPLORER_PROVIDER" && [ -n "$MIXPLORER_PKG" ]; then
+  enable_pkg "$MIXPLORER_PKG"
+  enable_component "$MIXPLORER_PKG/com.mixplorer.providers.DocProvider"
+fi
+
+if is_on "$FIX_GRANT_STORAGE_ACCESS"; then
+  for package in com.android.documentsui com.android.externalstorage "$ROOT_PKG"; do
+    grant_if_requested "$package" android.permission.READ_EXTERNAL_STORAGE
+    grant_if_requested "$package" android.permission.WRITE_EXTERNAL_STORAGE
+    set_appop "$package" READ_EXTERNAL_STORAGE
+    set_appop "$package" WRITE_EXTERNAL_STORAGE
+    set_appop "$package" LEGACY_STORAGE
+  done
+fi
+if is_on "$FIX_GRANT_MIXPLORER_STORAGE_PERMS" && [ -n "$MIXPLORER_PKG" ]; then
+  grant_if_requested "$MIXPLORER_PKG" android.permission.READ_EXTERNAL_STORAGE
+  grant_if_requested "$MIXPLORER_PKG" android.permission.WRITE_EXTERNAL_STORAGE
+  set_appop "$MIXPLORER_PKG" READ_EXTERNAL_STORAGE
+  set_appop "$MIXPLORER_PKG" WRITE_EXTERNAL_STORAGE
+  set_appop "$MIXPLORER_PKG" LEGACY_STORAGE
+fi
 
 if is_on "$FIX_CREATE_STANDARD_INTERNAL_DIRS"; then
-  for d in /storage/emulated/0/Download /storage/emulated/0/Documents /storage/emulated/0/Music /storage/emulated/0/Movies /storage/emulated/0/Pictures /storage/emulated/0/DCIM; do
-    mkdir -p "$d" >>"$LOG" 2>&1 || true
+  for directory in Download Documents Music Movies Pictures DCIM Alarms Audiobooks Notifications Podcasts Ringtones; do
+    mkdir -p "/storage/emulated/0/$directory" >> "$LOG" 2>&1 || true
   done
 fi
 
-if is_on "$FIX_FORCE_STOP_DOCUMENTSUI"; then
-  am force-stop com.android.documentsui >>"$LOG" 2>&1 || true
-fi
-if is_on "$FIX_FORCE_STOP_EXTERNALSTORAGE"; then
-  am force-stop com.android.externalstorage >>"$LOG" 2>&1 || true
-fi
+external_show=0
+case "$EXTERNAL_ROOT_MODE" in
+  show) external_show=1 ;;
+  hide) external_show=0 ;;
+  auto|*)
+    if external_provider_healthy; then
+      external_show=1
+      log "external primary root and child listing passed"
+    else
+      external_show=0
+      log "external primary root test failed; root provider remains available"
+    fi
+    ;;
+esac
+write_documentsui_prefs "$external_show"
+refresh_picker_once "$external_show"
 
-if is_on "$FIX_PROVIDER_WARMUP_QUERIES"; then
-  content_query content://com.android.providers.downloads.documents/root
-  content_query content://com.android.externalstorage.documents/root
-  content_query content://com.android.externalstorage.documents/document/home%3A/children
-  content_query content://com.mixplorer.doc/root
+if is_on "$FIX_WARM_UP_PROVIDERS"; then
+  run_bounded_sh 8 "content query --uri content://com.android.providers.downloads.documents/root --user '$TARGET_USER'" >> "$LOG" 2>&1 || true
+  run_bounded_sh 8 "content query --uri content://com.android.externalstorage.documents/root --user '$TARGET_USER'" >> "$LOG" 2>&1 || true
+  run_bounded_sh 8 "content query --uri content://$ROOT_AUTH/root --user '$TARGET_USER'" >> "$LOG" 2>&1 || true
 fi
 
 if is_on "$DIAG_AUTO_RUN_ON_BOOT" && [ -x "$MODDIR/tools/ts18-saf-deepdiag.sh" ]; then
-  sh "$MODDIR/tools/ts18-saf-deepdiag.sh" boot >>"$LOG" 2>&1 || true
+  sh "$MODDIR/tools/ts18-saf-deepdiag.sh" boot >> "$LOG" 2>&1 || true
 fi
 
 log "service complete"

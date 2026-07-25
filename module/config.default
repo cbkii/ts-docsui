@@ -1,51 +1,105 @@
-# TS18 SAF DocumentsUI Stable Picker Repair v0.8.0
+# TS18 Full File Picker v1.0.0
 # Runtime copy: /data/adb/ts18-documentsui-saf.conf
-# Edit runtime copy, then reboot. 1/on/yes/enabled = enabled. 0/off/no/disabled = disabled.
+# Change a value, save the file, then reboot.
+# Use 1 for enabled and 0 for disabled unless a comment lists other values.
 
+# Android user that owns the head-unit apps. TS18 normally uses user 0.
 TARGET_USER=0
+
+# Maximum number of checks while waiting for Android to finish starting.
 BOOT_WAIT_ATTEMPTS=45
+
+# Seconds between Android start checks.
 BOOT_WAIT_SECONDS=2
 
-# Stable picker path: AOSP Android 10 DocumentsUI only. The v2.2 custom TS18 provider is disabled because its DEX is invalid on TS18.
+# Keep the Android 10 system file picker enabled.
 FIX_ENABLE_AOSP_DOCUMENTSUI=1
+
+# Enable the picker activities needed by apps that choose files or folders.
 FIX_ENABLE_DOCUMENTSUI_COMPONENTS=1
-FIX_DISABLE_TS18_LOCAL_SAF_PROVIDER=1
-FIX_ENABLE_TS18_LOCAL_SAF_PROVIDER=0
-FIX_ENABLE_TS18_LOCAL_SAF_PROVIDER_COMPONENTS=0
+
+# Disable the second Google picker package if it exists, to avoid two competing pickers.
+FIX_DISABLE_GOOGLE_DOCUMENTSUI=1
+
+# Disable App Manager's intent interceptor so it cannot replace or wrap the system picker.
 FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR=1
-FIX_DISABLE_GOOGLE_AML_DOCUMENTSUI=1
-FIX_REMOVE_USER_DOCUMENTSUI_SHADOWS=0
 
-# Keep canonical ExternalStorageProvider package if present, but hide its advanced/broken device roots by default.
-# This keeps the useful Documents root while avoiding the s9863a1h10_Natv / USB Drive roots that currently show "Can't load content".
-FIX_TOUCH_CANONICAL_EXTERNALSTORAGE_PROVIDER=1
-FIX_ENABLE_CANONICAL_EXTERNALSTORAGE_PROVIDER=1
-FIX_DISABLE_EXTERNALSTORAGE_TEST_PROVIDER=1
-FIX_HIDE_BROKEN_EXTERNAL_ADVANCED_ROOTS=1
-FIX_DISABLE_CANONICAL_EXTERNALSTORAGE_PROVIDER=0
-FIX_FORCE_STOP_EXTERNALSTORAGE=0
-FIX_CLEAR_EXTERNALSTORAGE_DATA=0
+# Enable Android's normal shared-storage provider for internal storage and USB drives.
+FIX_ENABLE_EXTERNAL_STORAGE_PROVIDER=1
 
-# Optional existing broad-access provider fallback. MiXplorer is already installed on the target and has a real DocumentsProvider.
-FIX_ENABLE_MIXPLORER_PROVIDER=1
-FIX_GRANT_MIXPLORER_STORAGE_PERMS=1
+# Disable the test provider bundled inside some Android External Storage APKs.
+FIX_DISABLE_EXTERNAL_STORAGE_TEST_PROVIDER=1
 
-# Android-10-compatible grants/appops. v0.8.0 grants only permissions requested by each package and filters unknown appops.
-FIX_GRANT_DOCUMENTSUI_RUNTIME_PERMS=1
-FIX_SET_DOCUMENTSUI_APPOPS=1
-FIX_SET_LEGACY_STORAGE_APPOPS=1
+# Choose how Android's normal internal-storage root is shown.
+# auto = show it only when both the root and its file listing pass a live test.
+# show = always show it. hide = hide advanced internal and USB roots.
+EXTERNAL_ROOT_MODE=auto
 
-# DocumentsUI state repair.
-FIX_FIX_APP_DATA_OWNERSHIP=1
-FIX_SET_DOCUMENTSUI_DEVICE_ROOT_PREFS=1
-FIX_RESET_DOCUMENTSUI_ROOTS_CACHE=1
+# Enable the bundled provider that adds Internal storage (full) and Root file system.
+FIX_ENABLE_ROOT_FILE_PROVIDER=1
+
+# Automatically allow the bundled provider to use Magisk root without a prompt.
+FIX_AUTO_GRANT_ROOT_PROVIDER=1
+
+# Show /storage/emulated/0 through the bundled root provider as a reliable fallback.
+ROOT_PROVIDER_SHOW_INTERNAL=1
+
+# Show the complete / filesystem through the bundled root provider.
+ROOT_PROVIDER_SHOW_DEVICE=1
+
+# Show /storage/usbdisk0 and /storage/usbdisk1 when those paths exist.
+ROOT_PROVIDER_SHOW_USB=1
+
+# Allow new files and folders to be created through the root provider.
+ROOT_PROVIDER_ALLOW_CREATE=1
+
+# Allow file contents to be changed through the root provider.
+ROOT_PROVIDER_ALLOW_WRITE=1
+
+# Allow files and folders to be renamed or moved through the root provider.
+ROOT_PROVIDER_ALLOW_RENAME=1
+
+# Allow files and folders to be deleted through the root provider.
+# The provider still refuses to delete top-level system anchor folders themselves.
+ROOT_PROVIDER_ALLOW_DELETE=1
+
+# Shared-storage folder used briefly while a root file is opened for seekable editing.
+# Closed files are removed immediately; stale files are cleaned during boot.
+ROOT_PROVIDER_STAGE_DIR=/storage/emulated/0/.TS18-Root-Provider
+
+# Largest root file, in bytes, that may be copied into the shared staging folder.
+# Larger read-only files use a stream. Large root-file writes are rejected.
+ROOT_PROVIDER_STAGE_LIMIT_BYTES=268435456
+
+# Enable MiXplorer's DocumentsProvider only when MiXplorer is already installed.
+FIX_ENABLE_MIXPLORER_PROVIDER=0
+
+# Grant old Android storage permissions to MiXplorer when its provider is enabled.
+FIX_GRANT_MIXPLORER_STORAGE_PERMS=0
+
+# Grant Android 10 storage permissions and app-operations to the picker/provider packages.
+FIX_GRANT_STORAGE_ACCESS=1
+
+# Create common internal-storage folders when they do not already exist.
 FIX_CREATE_STANDARD_INTERNAL_DIRS=1
-FIX_FORCE_STOP_DOCUMENTSUI=1
-FIX_PROVIDER_WARMUP_QUERIES=1
 
-# Diagnostics: manual Action only; output final archive and logs to Download.
+# Clear the DocumentsUI root cache once after this module version or important config changes.
+FIX_REFRESH_PICKER_ON_CHANGE=1
+
+# Run small provider queries after setup so roots are ready before first use.
+FIX_WARM_UP_PROVIDERS=1
+
+# Run diagnostics automatically during boot. Keep disabled for normal use.
 DIAG_AUTO_RUN_ON_BOOT=0
+
+# Folder used for final diagnostic archives and logs.
 DIAG_OUTPUT_ROOT=/storage/emulated/0/Download/TS18-SAF-Diagnostics
+
+# Include APKs directly related to the picker and storage providers in diagnostics.
 DIAG_COPY_RELEVANT_APKS=1
+
+# Include every installed APK. This can produce a very large archive.
 DIAG_COPY_ALL_APKS=0
+
+# Largest single file copied into diagnostics, in bytes.
 DIAG_MAX_COPY_BYTES=52428800

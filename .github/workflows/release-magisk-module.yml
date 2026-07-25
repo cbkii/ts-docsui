@@ -4,32 +4,32 @@ name: Build and release Magisk module
   workflow_dispatch:
     inputs:
       expected_version:
-        description: 'Optional guard: expected module.prop version'
-        required: false
-        default: 'v0.8.0'
+        description: 'Expected module.prop version'
+        required: true
+        default: 'v1.0.0'
         type: string
       expected_version_code:
-        description: 'Optional guard: expected module.prop versionCode'
-        required: false
-        default: '080'
+        description: 'Expected module.prop versionCode'
+        required: true
+        default: '100'
         type: string
       create_release:
-        description: 'Create or update a GitHub Release with ZIP assets'
+        description: 'Create or update a GitHub Release'
         required: true
         default: true
         type: boolean
       tag:
-        description: 'Release tag. Leave blank to use module.prop version.'
+        description: 'Release tag. Blank uses module version.'
         required: false
         default: ''
         type: string
       draft:
-        description: 'Create a draft release if the release does not exist'
+        description: 'Create a draft release'
         required: true
         default: false
         type: boolean
       prerelease:
-        description: 'Mark release as pre-release if the release does not exist'
+        description: 'Mark as pre-release'
         required: true
         default: false
         type: boolean
@@ -37,47 +37,61 @@ name: Build and release Magisk module
 permissions:
   contents: write
 
-defaults:
-  run:
-    shell: bash
-
 jobs:
-  build:
-    name: Build installable module zip
+  release:
+    name: Build signed provider and module
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate module metadata and structure
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build signed root provider
+        run: python3 scripts/build-root-provider.py --repo-root . --gradle gradle --timeout 900
+
+      - name: Validate module
         run: |
+          find module -type f -name '*.sh' -print -exec sh -n {} ';'
+          sh -n module/META-INF/com/google/android/update-binary
           python3 scripts/validate-module.py \
             --module-dir module \
             --expected-version '${{ inputs.expected_version }}' \
             --expected-version-code '${{ inputs.expected_version_code }}'
 
-      - name: Build installable Magisk zip
+      - name: Build installable ZIP
         id: build
-        run: |
-          python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --github-output "$GITHUB_OUTPUT"
+        run: python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --github-output "$GITHUB_OUTPUT"
 
-      - name: Decide release tag
+      - name: Resolve release tag
         id: tag
         run: |
           tag='${{ inputs.tag }}'
           if [[ -z "$tag" ]]; then
             tag='${{ steps.build.outputs.version }}'
           fi
-          if [[ -z "$tag" ]]; then
-            echo 'Tag resolved to empty string' >&2
-            exit 1
-          fi
+          [[ -n "$tag" ]] || { echo 'Release tag is empty' >&2; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "release_name=TS18 SAF DocumentsUI ${{ steps.build.outputs.version }} (${{ steps.build.outputs.version_code }})" >> "$GITHUB_OUTPUT"
+          echo "release_name=TS18 Full File Picker ${{ steps.build.outputs.version }}" >> "$GITHUB_OUTPUT"
 
-      - name: Generate release metadata
+      - name: Generate update metadata
         run: |
           python3 scripts/make-update-json.py \
             --module-dir module \
@@ -85,18 +99,15 @@ jobs:
             --tag '${{ steps.tag.outputs.tag }}' \
             --zip-name '${{ steps.build.outputs.zip_name }}' \
             --out dist/update.json
-          cat > dist/release-notes.md <<'EOF'
-          # TS18 SAF DocumentsUI ${{ steps.build.outputs.version }}
+          cat > dist/release-notes.md <<'EOF_NOTES'
+          # TS18 Full File Picker v1.0.0
 
-          Installable Magisk ZIP built from this repository.
-
-          - Module ID: `${{ steps.build.outputs.module_id }}`
-          - Version: `${{ steps.build.outputs.version }}`
-          - Version code: `${{ steps.build.outputs.version_code }}`
-          - SHA256: `${{ steps.build.outputs.sha256 }}`
-
-          For private repositories, download the ZIP from this release while signed in to GitHub, then install it manually in Magisk.
-          EOF
+          - Restores the working Android `primary:` root for all of `/storage/emulated/0`.
+          - Adds a separate Magisk-root DocumentsProvider for `/` and root-only paths.
+          - Keeps the stock ExternalStorageProvider instead of replacing it.
+          - Preserves the established module ID for in-place upgrades.
+          - Exports manual Action diagnostics to Download.
+          EOF_NOTES
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -109,7 +120,7 @@ jobs:
             dist/release-notes.md
           if-no-files-found: error
 
-      - name: Create or update GitHub Release
+      - name: Create or update release
         if: ${{ inputs.create_release }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,11 +136,7 @@ jobs:
             gh release upload "$TAG" "$ZIP_PATH" "$SHA_PATH" dist/update.json --clobber
           else
             args=(release create "$TAG" "$ZIP_PATH" "$SHA_PATH" dist/update.json --title "$RELEASE_NAME" --notes-file dist/release-notes.md)
-            if [[ "$DRAFT" == 'true' ]]; then
-              args+=(--draft)
-            fi
-            if [[ "$PRERELEASE" == 'true' ]]; then
-              args+=(--prerelease)
-            fi
+            [[ "$DRAFT" == true ]] && args+=(--draft)
+            [[ "$PRERELEASE" == true ]] && args+=(--prerelease)
             gh "${args[@]}"
           fi
