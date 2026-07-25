@@ -1,0 +1,43 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.cbkii.tsdocsui.rootprovider'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.cbkii.tsdocsui.rootprovider'
+        minSdk 26
+        targetSdk 28
+        versionCode 100
+        versionName '1.0.0'
+    }
+
+    signingConfigs {
+        release {
+            storeFile file('keystore/tsdocsui-root-provider.jks')
+            storePassword 'tsdocsui'
+            keyAlias 'tsdocsui'
+            keyPassword 'tsdocsui'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        abortOnError true
+        checkReleaseBuilds true
+    }
+}
