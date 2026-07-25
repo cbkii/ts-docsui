@@ -1,15 +1,41 @@
-# TS18 SAF DocumentsUI Stable Picker Repair v0.8.0
+# TS18 Full File Picker
 
-Purpose: recover the stable picker behaviour after v2.2 diagnostics showed the bundled `com.ts18.safprovider` APK has an invalid DEX and crashes whenever its provider is started.
+This Magisk module repairs the Android 10 system file picker on TS18-class head units.
 
-Default v0.8.0 behaviour:
+## What it provides
 
-- Keeps AOSP Android 10 `com.android.documentsui`.
-- Removes the invalid `TS18LocalDocumentsProvider.apk` payload.
-- Disables/clears stale `com.ts18.safprovider` if left from v2.2.
-- Disables AppManager `ActivityInterceptor` for picker stability.
-- Keeps existing `com.android.externalstorage` if present, but hides advanced/device roots by DocumentsUI preferences to avoid the broken `s9863a1h10_Natv` / `USB Drive` entries.
-- Enables MiXplorer's existing DocumentsProvider as a broad-access fallback if MiXplorer is installed.
-- Exports diagnostics only to `/storage/emulated/0/Download/TS18-SAF-Diagnostics`.
+- Android 10 DocumentsUI for `OPEN_DOCUMENT`, `CREATE_DOCUMENT`, and `OPEN_DOCUMENT_TREE`.
+- The normal Android `primary:` root for all of `/storage/emulated/0` when its live root and child queries pass.
+- A separate **Internal storage (full)** root backed by Magisk root.
+- A **Root file system** root for `/`, including app-private and system paths that ordinary storage permissions cannot read.
+- Optional TS18 USB roots at `/storage/usbdisk0` and `/storage/usbdisk1`.
+- Create, read, write, rename, move, copy, and delete operations through the root provider where the mounted filesystem permits them.
+- Manual diagnostics from the Magisk Action button, exported to `/storage/emulated/0/Download/TS18-SAF-Diagnostics`.
 
-This version prioritises no-crash picker operation and useful Downloads/Documents access. A true direct TS18 DocumentsProvider still requires a valid Android-built APK/Dex; v2.2's hand-built provider payload is intentionally removed.
+## Important behaviour
+
+The normal Android ExternalStorageProvider remains the preferred provider for `/storage/emulated/0` because it offers native seekable file descriptors and Android-compatible URI behaviour. The bundled root provider is an additional provider for root-only paths and a fallback internal-storage root.
+
+The root provider uses Magisk `su`. The module normally creates an allow policy for its package automatically. When automatic policy creation is unavailable, Magisk may show one root request.
+
+Root access cannot make read-only device-mapper mounts writable. `/system`, `/vendor`, and similar partitions remain read-only unless the firmware mounted them writable. The root provider can still browse and read them.
+
+## Configuration
+
+Edit `/data/adb/ts18-documentsui-saf.conf`, then reboot. Every setting has a plain-English comment in the file.
+
+## Diagnostics
+
+Press **Action** in Magisk, or run:
+
+```sh
+su -c '/data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh full'
+```
+
+The final archive is written under:
+
+```text
+/storage/emulated/0/Download/TS18-SAF-Diagnostics/
+```
+
+Temporary diagnostic work is also kept under that Download folder and removed after the archive is verified. The collector does not use `/tmp`, `/cache`, or `/data/local/tmp`.
