@@ -25,6 +25,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Validate Python and release versioning
+        run: |
+          python3 -m compileall -q scripts tests
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 scripts/release_version.py --repo-root . --module-prop module/module.prop
+          python3 scripts/sync_runtime_version.py --repo-root . --check
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -75,12 +85,23 @@ jobs:
           find module -type f -name '*.sh' -print -exec sh -n {} ';'
           sh -n module/META-INF/com/google/android/update-binary
 
-      - name: Validate module
+      - name: Validate module and provider metadata
         run: |
+          set -euo pipefail
+          module_version="$(sed -n 's/^version=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
+          module_code="$(sed -n 's/^versionCode=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
           python3 scripts/validate-module.py \
             --module-dir module \
-            --expected-version v1.0.0 \
-            --expected-version-code 100
+            --expected-version "${module_version}" \
+            --expected-version-code "${module_code}"
+
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          aapt_path="$(find "${sdk_root}/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
+          badging="$(${aapt_path} dump badging module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk | head -n1)"
+          provider_code="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<< "${badging}")"
+          provider_name="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<< "${badging}")"
+          [[ "${provider_code}" == "${module_code}" ]]
+          [[ "${provider_name}" == "${module_version#v}" ]]
 
       - name: Build installable ZIP
         id: module
@@ -114,6 +135,7 @@ jobs:
                   raise SystemExit(f'non-STORE entries: {compressed[:10]}')
           print(f'OK {zips[0]}')
           PY
+          (cd dist && sha256sum -c "$(basename '${{ steps.module.outputs.sha256_path }}')")
 
       - name: Upload installable module
         uses: actions/upload-artifact@v4

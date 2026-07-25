@@ -39,6 +39,7 @@ EXECUTABLE_SCRIPTS = [
 ]
 
 ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]+$")
+VERSION_RE = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 VCODE_RE = re.compile(r"^[0-9]+$")
 
 
@@ -110,9 +111,12 @@ def main(argv: list[str] | None = None) -> int:
         return fail(f"module id is not Magisk-compatible: {props['id']}")
     if props["id"] != "ts18_documentsui_saf_full":
         return fail("module id must remain ts18_documentsui_saf_full to upgrade existing installs")
+    if not VERSION_RE.fullmatch(props["version"]):
+        return fail(f"version must use vMAJOR.MINOR.PATCH: {props['version']}")
     if not VCODE_RE.fullmatch(props["versionCode"]):
         return fail(f"versionCode must be an integer string: {props['versionCode']}")
-    int(props["versionCode"], 10)
+    if int(props["versionCode"], 10) < 1:
+        return fail("versionCode must be positive")
 
     if args.expected_version and props["version"] != args.expected_version:
         return fail(f"expected version {args.expected_version}, found {props['version']}")

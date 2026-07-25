@@ -9,8 +9,10 @@ WORKBASE=/data/adb/${MODID}.install
 STAGE=$WORKBASE/stage
 STATE_DIR=/data/adb/ts18-documentsui-saf
 LOGDIR=$STATE_DIR/logs
-INSTALL_LOG=$LOGDIR/install-v100.log
+INSTALL_LOG=$LOGDIR/install.log
 CFG=/data/adb/ts18-documentsui-saf.conf
+MODULE_VERSION=unknown
+MODULE_VERSION_CODE=unknown
 
 note() { ui_print "$1"; }
 warn() { ui_print "! $1"; }
@@ -25,7 +27,7 @@ choose_workbase() {
   STAGE=$WORKBASE/stage
   STATE_DIR=/storage/emulated/0/ts18-documentsui-saf
   LOGDIR=$STATE_DIR/logs
-  INSTALL_LOG=$LOGDIR/install-v100.log
+  INSTALL_LOG=$LOGDIR/install.log
   CFG=/storage/emulated/0/ts18-documentsui-saf.conf
   mkdir -p "$WORKBASE" 2>/dev/null
 }
@@ -64,6 +66,13 @@ extract_tree() {
   cp -af "$STAGE/$prefix" "$MODPATH/" >> "$INSTALL_LOG" 2>&1
 }
 
+read_module_version() {
+  MODULE_VERSION=$(sed -n 's/^version=//p' "$MODPATH/module.prop" 2>/dev/null | head -n 1)
+  MODULE_VERSION_CODE=$(sed -n 's/^versionCode=//p' "$MODPATH/module.prop" 2>/dev/null | head -n 1)
+  [ -n "$MODULE_VERSION" ] || MODULE_VERSION=unknown
+  case "$MODULE_VERSION_CODE" in ''|*[!0-9]*) MODULE_VERSION_CODE=unknown ;; esac
+}
+
 merge_config() {
   default_file=$MODPATH/config.default
   [ -f "$default_file" ] || return 1
@@ -76,7 +85,7 @@ merge_config() {
   fi
 
   timestamp=$(date +%Y%m%d%H%M%S 2>/dev/null || echo backup)
-  backup=${CFG}.pre-v100.$timestamp
+  backup=${CFG}.pre-${MODULE_VERSION_CODE}.$timestamp
   cp -f "$CFG" "$backup" 2>/dev/null || warn "Could not back up the existing config"
 
   merged=${CFG}.new
@@ -99,7 +108,7 @@ merge_config() {
   return 0
 }
 
-note "- TS18 Full File Picker v1.0.0"
+note "- TS18 Full File Picker"
 note "- Shows all internal storage and adds a Magisk-root file-system provider"
 note "- Uses /data/adb for installer work"
 
@@ -138,6 +147,10 @@ for directory in system tools; do
   note "- extracting $directory"
   extract_tree "$directory" || stop_install "Failed to extract $directory"
 done
+
+read_module_version
+note "- Version $MODULE_VERSION ($MODULE_VERSION_CODE)"
+echo "version=$MODULE_VERSION versionCode=$MODULE_VERSION_CODE" >> "$INSTALL_LOG"
 
 [ -s "$MODPATH/system/priv-app/DocumentsUI/DocumentsUI.apk" ] || stop_install "DocumentsUI.apk is missing"
 [ -s "$MODPATH/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk" ] || stop_install "TS18RootFileProvider.apk is missing"
