@@ -39,39 +39,31 @@ def should_exclude(path: Path, module_dir: Path) -> bool:
 
 
 def zip_mode(path: Path) -> int:
-    if path.is_dir():
-        return stat.S_IFDIR | 0o755
     if path.suffix in EXECUTE_SUFFIXES or path.name in EXECUTE_NAMES:
         return stat.S_IFREG | 0o755
     return stat.S_IFREG | 0o644
 
 
-def add_file(zf: zipfile.ZipFile, path: Path, arcname: str) -> None:
+def add_file(archive: zipfile.ZipFile, path: Path, arcname: str) -> None:
     info = zipfile.ZipInfo(arcname, FIXED_DATE)
-    info.compress_type = zipfile.ZIP_DEFLATED
+    info.compress_type = zipfile.ZIP_STORED
+    info.create_system = 3
     info.external_attr = zip_mode(path) << 16
-    with path.open("rb") as fh:
-        zf.writestr(info, fh.read())
-
-
-def add_dir(zf: zipfile.ZipFile, arcname: str) -> None:
-    if not arcname.endswith("/"):
-        arcname += "/"
-    info = zipfile.ZipInfo(arcname, FIXED_DATE)
-    info.external_attr = (stat.S_IFDIR | 0o755) << 16
-    zf.writestr(info, b"")
+    info.extra = b""
+    with path.open("rb") as handle:
+        archive.writestr(info, handle.read())
 
 
 def sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build an installable Magisk module zip.")
+    parser = argparse.ArgumentParser(description="Build an installable STORE-only Magisk module ZIP.")
     parser.add_argument("--module-dir", type=Path, default=Path("module"))
     parser.add_argument("--out-dir", type=Path, default=Path("dist"))
     parser.add_argument("--github-output", type=Path, default=None)
@@ -95,29 +87,30 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     zip_name = f"{safe_filename(module_id)}-{safe_filename(version)}-{safe_filename(version_code)}.zip"
     zip_path = out_dir / zip_name
-    temp_path = out_dir / f".{zip_name}.tmp"
+    temp_path = out_dir / f".{zip_name}.new"
+    temp_path.unlink(missing_ok=True)
 
-    if temp_path.exists():
-        temp_path.unlink()
+    files = sorted(
+        (path for path in module_dir.rglob("*") if path.is_file() and not should_exclude(path, module_dir)),
+        key=lambda path: path.relative_to(module_dir).as_posix(),
+    )
 
-    entries: list[Path] = []
-    for path in module_dir.rglob("*"):
-        if should_exclude(path, module_dir):
-            continue
-        entries.append(path)
-    entries.sort(key=lambda p: p.relative_to(module_dir).as_posix())
+    try:
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as archive:
+            for path in files:
+                add_file(archive, path, path.relative_to(module_dir).as_posix())
+        with zipfile.ZipFile(temp_path) as archive:
+            bad = archive.testzip()
+            if bad:
+                raise RuntimeError(f"corrupt ZIP member: {bad}")
+            if any(info.compress_type != zipfile.ZIP_STORED for info in archive.infolist()):
+                raise RuntimeError("ZIP contains a compressed entry")
+        os.replace(temp_path, zip_path)
+    except Exception as exc:
+        temp_path.unlink(missing_ok=True)
+        print(f"ERROR: failed to build module ZIP: {exc}", file=sys.stderr)
+        return 1
 
-    with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        # Add directories first for cleaner listings.
-        for path in entries:
-            if path.is_dir():
-                add_dir(zf, path.relative_to(module_dir).as_posix())
-        for path in entries:
-            if path.is_file():
-                rel = path.relative_to(module_dir).as_posix()
-                add_file(zf, path, rel)
-
-    os.replace(temp_path, zip_path)
     digest = sha256(zip_path)
     sha_path = zip_path.with_suffix(zip_path.suffix + ".sha256")
     sha_path.write_text(f"{digest}  {zip_name}\n", encoding="utf-8", newline="\n")
@@ -134,12 +127,13 @@ def main(argv: list[str] | None = None) -> int:
     }
     print(json.dumps(result, indent=2, sort_keys=True))
 
-    output_path = args.github_output or (Path(os.environ["GITHUB_OUTPUT"]) if "GITHUB_OUTPUT" in os.environ else None)
+    output_path = args.github_output or (
+        Path(os.environ["GITHUB_OUTPUT"]) if "GITHUB_OUTPUT" in os.environ else None
+    )
     if output_path:
-        with output_path.open("a", encoding="utf-8") as fh:
+        with output_path.open("a", encoding="utf-8") as handle:
             for key, value in result.items():
-                fh.write(f"{key}={value}\n")
-
+                handle.write(f"{key}={value}\n")
     return 0
 
 
