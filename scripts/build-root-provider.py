@@ -43,9 +43,13 @@ def main(argv: list[str] | None = None) -> int:
         return fail(f"encoded signing key is missing: {encoded_key}")
 
     try:
-        key_bytes = base64.b64decode(encoded_key.read_text(encoding="ascii"), validate=True)
+        encoded_text = "".join(encoded_key.read_text(encoding="ascii").split())
+        key_bytes = base64.b64decode(encoded_text, validate=True)
     except (ValueError, UnicodeError) as exc:
         return fail(f"encoded signing key is invalid: {exc}")
+
+    if len(key_bytes) < 1_024:
+        return fail(f"decoded signing key looks too small: {len(key_bytes)} bytes")
 
     key.parent.mkdir(parents=True, exist_ok=True)
     key.write_bytes(key_bytes)
