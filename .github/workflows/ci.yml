@@ -1,0 +1,99 @@
+name: Validate TS18 file picker module
+
+'on':
+  push:
+    branches:
+      - main
+      - 'fix/**'
+      - 'feature/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ts-docsui-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build provider and Magisk ZIP
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build signed root provider
+        run: python3 scripts/build-root-provider.py --repo-root . --gradle gradle --timeout 900
+
+      - name: Validate shell syntax
+        run: |
+          find module -type f -name '*.sh' -print -exec sh -n {} ';'
+          sh -n module/META-INF/com/google/android/update-binary
+
+      - name: Validate module
+        run: |
+          python3 scripts/validate-module.py \
+            --module-dir module \
+            --expected-version v1.0.0 \
+            --expected-version-code 100
+
+      - name: Build installable ZIP
+        id: module
+        run: python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --github-output "$GITHUB_OUTPUT"
+
+      - name: Verify installable ZIP
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+          zips = list(Path('dist').glob('*.zip'))
+          if len(zips) != 1:
+              raise SystemExit(f'expected one ZIP, found {zips}')
+          with zipfile.ZipFile(zips[0]) as archive:
+              bad = archive.testzip()
+              if bad:
+                  raise SystemExit(f'corrupt ZIP member: {bad}')
+              names = set(archive.namelist())
+              required = {
+                  'module.prop',
+                  'customize.sh',
+                  'system/priv-app/DocumentsUI/DocumentsUI.apk',
+                  'system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk',
+                  'tools/rootfs-helper.sh',
+              }
+              missing = required - names
+              if missing:
+                  raise SystemExit(f'missing ZIP entries: {sorted(missing)}')
+          print(f'OK {zips[0]}')
+          PY
+
+      - name: Upload installable module
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.module.outputs.zip_name }}
+          path: |
+            ${{ steps.module.outputs.zip_path }}
+            ${{ steps.module.outputs.sha256_path }}
+          if-no-files-found: error
+          retention-days: 30
