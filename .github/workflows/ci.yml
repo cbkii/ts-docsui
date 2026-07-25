@@ -34,6 +34,7 @@ jobs:
           python3 -m compileall -q scripts tests
           python3 -m unittest discover -s tests -p 'test_*.py' -v
           python3 scripts/release_version.py --repo-root . --module-prop module/module.prop
+          python3 scripts/sync_runtime_version.py --repo-root . --check
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
