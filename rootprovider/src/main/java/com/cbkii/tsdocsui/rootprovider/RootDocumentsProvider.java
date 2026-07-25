@@ -9,7 +9,6 @@ import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.ParcelFileDescriptor;
-import android.os.Process;
 import android.provider.DocumentsContract;
 import android.provider.DocumentsContract.Document;
 import android.provider.DocumentsContract.Root;
@@ -263,7 +262,7 @@ public final class RootDocumentsProvider extends DocumentsProvider {
             stage = File.createTempFile("root-", ".stage", stageDir);
             RootEntry existing = RootShell.stat(sourcePath);
             if (existing != null && shouldStageExistingContent(mode)) {
-                RootShell.copyOut(sourcePath, stage, Process.myUid());
+                RootShell.copyOut(sourcePath, stage, android.os.Process.myUid());
             }
             if (signal != null) {
                 signal.throwIfCanceled();
