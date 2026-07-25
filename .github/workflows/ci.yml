@@ -44,7 +44,31 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build signed root provider
-        run: python3 scripts/build-root-provider.py --repo-root . --gradle gradle --timeout 900
+        id: provider
+        continue-on-error: true
+        run: |
+          mkdir -p .build
+          set -o pipefail
+          python3 scripts/build-root-provider.py --repo-root . --gradle gradle --timeout 900 2>&1 | tee .build/root-provider-build.log
+
+      - name: Upload provider build evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: root-provider-build-evidence
+          path: |
+            .build/root-provider-build.log
+            rootprovider/build/reports/lint-results-release.txt
+            rootprovider/build/reports/lint-results-release.html
+            rootprovider/build/reports/problems/problems-report.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce provider build success
+        if: ${{ steps.provider.outcome != 'success' }}
+        run: |
+          echo 'The signed root-provider build failed. See root-provider-build-evidence.' >&2
+          exit 1
 
       - name: Validate shell syntax
         run: |
@@ -85,6 +109,9 @@ jobs:
               missing = required - names
               if missing:
                   raise SystemExit(f'missing ZIP entries: {sorted(missing)}')
+              compressed = [info.filename for info in archive.infolist() if info.compress_type != zipfile.ZIP_STORED]
+              if compressed:
+                  raise SystemExit(f'non-STORE entries: {compressed[:10]}')
           print(f'OK {zips[0]}')
           PY
 
