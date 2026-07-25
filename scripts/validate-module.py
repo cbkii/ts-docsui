@@ -4,18 +4,26 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import zipfile
 from pathlib import Path
 
 REQUIRED_FILES = [
     "module.prop",
+    "config.default",
     "customize.sh",
     "service.sh",
     "post-fs-data.sh",
     "uninstall.sh",
     "action.sh",
+    "README.md",
     "META-INF/com/google/android/update-binary",
     "META-INF/com/google/android/updater-script",
     "system/priv-app/DocumentsUI/DocumentsUI.apk",
+    "system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk",
+    "tools/rootfs-helper.sh",
+    "tools/ts18-saf-deepdiag.sh",
+    "tools/ts18-saf-diagnose.sh",
+    "tools/ts18-saf-launch.sh",
 ]
 
 EXECUTABLE_SCRIPTS = [
@@ -24,6 +32,7 @@ EXECUTABLE_SCRIPTS = [
     "post-fs-data.sh",
     "uninstall.sh",
     "action.sh",
+    "tools/rootfs-helper.sh",
     "tools/ts18-saf-deepdiag.sh",
     "tools/ts18-saf-diagnose.sh",
     "tools/ts18-saf-launch.sh",
@@ -51,8 +60,25 @@ def fail(message: str) -> int:
     return 1
 
 
+def validate_apk(path: Path, minimum_size: int) -> str | None:
+    if path.stat().st_size <= minimum_size:
+        return f"APK looks too small: {path} ({path.stat().st_size} bytes)"
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            for required in ("AndroidManifest.xml", "classes.dex"):
+                if required not in names:
+                    return f"APK is missing {required}: {path}"
+            bad = archive.testzip()
+            if bad:
+                return f"APK contains a corrupt member {bad}: {path}"
+    except zipfile.BadZipFile as exc:
+        return f"APK is invalid: {path}: {exc}"
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate a Magisk module directory.")
+    parser = argparse.ArgumentParser(description="Validate the TS18 Magisk module directory.")
     parser.add_argument("--module-dir", type=Path, default=Path("module"))
     parser.add_argument("--expected-version", default="")
     parser.add_argument("--expected-version-code", default="")
@@ -82,34 +108,43 @@ def main(argv: list[str] | None = None) -> int:
 
     if not ID_RE.fullmatch(props["id"]):
         return fail(f"module id is not Magisk-compatible: {props['id']}")
-
+    if props["id"] != "ts18_documentsui_saf_full":
+        return fail("module id must remain ts18_documentsui_saf_full to upgrade existing installs")
     if not VCODE_RE.fullmatch(props["versionCode"]):
         return fail(f"versionCode must be an integer string: {props['versionCode']}")
-
-    # Parse as base 10 so 080 is valid and not treated as octal.
-    try:
-        int(props["versionCode"], 10)
-    except ValueError:
-        return fail(f"versionCode is not base-10 parseable: {props['versionCode']}")
+    int(props["versionCode"], 10)
 
     if args.expected_version and props["version"] != args.expected_version:
         return fail(f"expected version {args.expected_version}, found {props['version']}")
-
     if args.expected_version_code and props["versionCode"] != args.expected_version_code:
         return fail(
             f"expected versionCode {args.expected_version_code}, found {props['versionCode']}"
         )
 
-    apk = module_dir / "system/priv-app/DocumentsUI/DocumentsUI.apk"
-    if apk.stat().st_size <= 1024 * 1024:
-        return fail(f"DocumentsUI.apk looks too small: {apk.stat().st_size} bytes")
+    for apk_rel, minimum in (
+        ("system/priv-app/DocumentsUI/DocumentsUI.apk", 1024 * 1024),
+        ("system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk", 10_000),
+    ):
+        error = validate_apk(module_dir / apk_rel, minimum)
+        if error:
+            return fail(error)
+
+    forbidden_payloads = [
+        "system/priv-app/ExternalStorageProvider/ExternalStorageProvider.apk",
+        "system/priv-app/TS18LocalDocumentsProvider/TS18LocalDocumentsProvider.apk",
+    ]
+    present = [path for path in forbidden_payloads if (module_dir / path).exists()]
+    if present:
+        return fail("module must not overlay known-problem provider APKs: " + ", ".join(present))
 
     for rel in EXECUTABLE_SCRIPTS:
         path = module_dir / rel
-        if path.exists():
-            first = path.read_bytes()[:64]
-            if not first.startswith(b"#!"):
-                return fail(f"script missing shebang: {rel}")
+        first = path.read_bytes()[:64]
+        if not first.startswith(b"#!"):
+            return fail(f"script missing shebang: {rel}")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if re.search(r"(^|[\s\"'])/(tmp|cache|data/local/tmp)(/|[\s\"']|$)", text):
+            return fail(f"script uses a forbidden temporary root: {rel}")
 
     print(
         f"OK module {props['id']} {props['version']} ({props['versionCode']}) at {module_dir}"
