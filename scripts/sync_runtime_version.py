@@ -6,7 +6,10 @@ import re
 import sys
 from pathlib import Path
 
-from scripts.release_version import parse_properties, parse_semver
+try:
+    from scripts.release_version import parse_properties, parse_semver
+except ModuleNotFoundError:
+    from release_version import parse_properties, parse_semver
 
 
 def substitute_once(text: str, pattern: str, replacement: str, label: str) -> str:
