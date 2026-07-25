@@ -20,6 +20,8 @@ The root provider uses Magisk `su`. The module normally creates an allow policy 
 
 Root access cannot make read-only device-mapper mounts writable. `/system`, `/vendor`, and similar partitions remain read-only unless the firmware mounted them writable. The root provider can still browse and read them.
 
+Seekable root-file editing uses a short-lived hidden staging folder under `/storage/emulated/0/.TS18-Root-Provider`. A staged file is removed when the client closes it; stale files older than one hour are removed during boot. Root-provider staging never uses `/tmp`, `/cache`, `/data/local/tmp`, or a top-level scratch folder under `/data`.
+
 ## Configuration
 
 Edit `/data/adb/ts18-documentsui-saf.conf`, then reboot. Every setting has a plain-English comment in the file.
