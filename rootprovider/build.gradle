@@ -9,6 +9,8 @@ android {
     defaultConfig {
         applicationId 'com.cbkii.tsdocsui.rootprovider'
         minSdk 26
+        // Deliberate: this systemless provider runs only on Android 10/API 29 TS18 units.
+        // Targeting 28 retains legacy shared-storage behaviour required by that OEM platform.
         targetSdk 28
         versionCode 100
         versionName '1.0.0'
@@ -39,5 +41,7 @@ android {
     lint {
         abortOnError true
         checkReleaseBuilds true
+        // This APK is not published to Google Play; API 28 targeting is intentional for TS18.
+        disable 'ExpiredTargetSdkVersion'
     }
 }
