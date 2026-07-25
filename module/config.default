@@ -63,7 +63,11 @@ ROOT_PROVIDER_ALLOW_RENAME=1
 # The provider still refuses to delete top-level system anchor folders themselves.
 ROOT_PROVIDER_ALLOW_DELETE=1
 
-# Largest root file, in bytes, that may be copied into provider cache for seekable editing.
+# Shared-storage folder used briefly while a root file is opened for seekable editing.
+# Closed files are removed immediately; stale files are cleaned during boot.
+ROOT_PROVIDER_STAGE_DIR=/storage/emulated/0/.TS18-Root-Provider
+
+# Largest root file, in bytes, that may be copied into the shared staging folder.
 # Larger read-only files use a stream. Large root-file writes are rejected.
 ROOT_PROVIDER_STAGE_LIMIT_BYTES=268435456
 
