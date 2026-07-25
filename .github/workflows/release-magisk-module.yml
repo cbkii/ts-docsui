@@ -124,10 +124,6 @@ jobs:
             echo "::error::Local and remote tag state disagree for ${RELEASE_TAG}."
             exit 1
           fi
-          if [[ "${remote_tag}" == true && "${release_exists}" != true ]]; then
-            echo "::error::Tag ${RELEASE_TAG} exists without a matching GitHub release."
-            exit 1
-          fi
           if [[ "${release_exists}" == true && "${remote_tag}" != true ]]; then
             echo "::error::Release ${RELEASE_TAG} exists without a matching Git tag."
             exit 1
@@ -135,18 +131,23 @@ jobs:
 
           if [[ "${remote_tag}" == true ]]; then
             if [[ -z "$(printf '%s' "${INPUT_VERSION_TAG}" | xargs)" ]]; then
-              echo "::error::The automatically resolved tag ${RELEASE_TAG} already exists. Re-run after checking tag history."
+              echo "::error::The automatically resolved tag ${RELEASE_TAG} already exists. Use its exact version_tag to resume or rebuild it."
               exit 1
             fi
-            if [[ "${REPLACE_EXISTING_ASSETS}" != true ]]; then
+            if [[ "${release_exists}" == true && "${REPLACE_EXISTING_ASSETS}" != true ]]; then
               echo "::error::Tag and release ${RELEASE_TAG} already exist. Enable replace_existing_assets only to rebuild that exact tagged source."
               exit 1
             fi
-            echo "existing_release=true" >> "${GITHUB_OUTPUT}"
+            if [[ "${release_exists}" != true ]]; then
+              echo "::warning::Tag ${RELEASE_TAG} exists without a release. Resuming publication from that exact immutable tag."
+            fi
+            echo "existing_release=${release_exists}" >> "${GITHUB_OUTPUT}"
+            echo "tagged_source=true" >> "${GITHUB_OUTPUT}"
             echo "new_release=false" >> "${GITHUB_OUTPUT}"
             echo "tag_commit=$(git rev-list -n 1 "${RELEASE_TAG}")" >> "${GITHUB_OUTPUT}"
           else
             echo "existing_release=false" >> "${GITHUB_OUTPUT}"
+            echo "tagged_source=false" >> "${GITHUB_OUTPUT}"
             echo "new_release=true" >> "${GITHUB_OUTPUT}"
             echo "tag_commit=" >> "${GITHUB_OUTPUT}"
           fi
@@ -155,20 +156,19 @@ jobs:
         id: source
         shell: bash
         env:
-          EXISTING_RELEASE: ${{ steps.collision.outputs.existing_release }}
+          TAGGED_SOURCE: ${{ steps.collision.outputs.tagged_source }}
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
           RELEASE_VERSION_CODE: ${{ steps.version.outputs.release_version_code }}
           CURRENT_VERSION: ${{ steps.version.outputs.current_version }}
           CURRENT_VERSION_CODE: ${{ steps.version.outputs.current_version_code }}
           VERSION_INCREASES: ${{ steps.version.outputs.version_increases }}
-          INPUT_VERSION_TAG: ${{ inputs.version_tag }}
           INPUT_VERSION_CODE: ${{ inputs.version_code }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-          if [[ "${EXISTING_RELEASE}" == true ]]; then
+          if [[ "${TAGGED_SOURCE}" == true ]]; then
             git checkout --detach "${RELEASE_TAG}"
             source_version="$(sed -n 's/^version=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
             source_code="$(sed -n 's/^versionCode=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
@@ -187,13 +187,20 @@ jobs:
             exit 0
           fi
 
-          if [[ "${RELEASE_TAG}" != "${CURRENT_VERSION}" && "${VERSION_INCREASES}" != true ]]; then
-            echo "::error::New release version ${RELEASE_TAG} is lower than current ${CURRENT_VERSION}."
-            exit 1
-          fi
-          if (( RELEASE_VERSION_CODE <= CURRENT_VERSION_CODE )); then
-            echo "::error::New releases require a versionCode greater than ${CURRENT_VERSION_CODE}; resolved ${RELEASE_VERSION_CODE}."
-            exit 1
+          if [[ "${RELEASE_TAG}" == "${CURRENT_VERSION}" ]]; then
+            if (( RELEASE_VERSION_CODE < CURRENT_VERSION_CODE )); then
+              echo "::error::Version ${RELEASE_TAG} cannot reduce versionCode ${CURRENT_VERSION_CODE} to ${RELEASE_VERSION_CODE}."
+              exit 1
+            fi
+          else
+            if [[ "${VERSION_INCREASES}" != true ]]; then
+              echo "::error::New release version ${RELEASE_TAG} is not newer than current ${CURRENT_VERSION}."
+              exit 1
+            fi
+            if (( RELEASE_VERSION_CODE <= CURRENT_VERSION_CODE )); then
+              echo "::error::A newer release requires a versionCode greater than ${CURRENT_VERSION_CODE}; resolved ${RELEASE_VERSION_CODE}."
+              exit 1
+            fi
           fi
 
           python3 scripts/release_version.py \
@@ -336,9 +343,9 @@ jobs:
             echo
             echo '## Changes'
             if [[ -n "${PREVIOUS_TAG}" && "${PREVIOUS_TAG}" != "${RELEASE_TAG}" ]]; then
-              git log --no-merges --pretty='- %s' "${PREVIOUS_TAG}..${RELEASE_COMMIT}" | head -n 50
+              git log --no-merges --max-count=50 --pretty='- %s' "${PREVIOUS_TAG}..${RELEASE_COMMIT}"
             else
-              git log --no-merges --pretty='- %s' -n 20 "${RELEASE_COMMIT}"
+              git log --no-merges --max-count=20 --pretty='- %s' "${RELEASE_COMMIT}"
             fi
           } > dist/release-notes.md
 
@@ -351,7 +358,10 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$(git rev-parse HEAD)" == "${RELEASE_COMMIT}" ]] || { echo '::error::Release source moved before tagging.'; exit 1; }
-          git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null && { echo "::error::Tag ${RELEASE_TAG} appeared during this run."; exit 1; } || true
+          if git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            echo "::error::Tag ${RELEASE_TAG} appeared during this run."
+            exit 1
+          fi
           git tag -a "${RELEASE_TAG}" "${RELEASE_COMMIT}" -m "TS18 Full File Picker ${RELEASE_TAG}"
           git push origin "refs/tags/${RELEASE_TAG}"
 
@@ -399,6 +409,7 @@ jobs:
             echo "- Version: \`${{ steps.version.outputs.release_tag }}\`"
             echo "- Version code: \`${{ steps.source.outputs.release_version_code }}\`"
             echo "- Existing release rebuild: \`${{ steps.collision.outputs.existing_release }}\`"
+            echo "- Tagged source recovery: \`${{ steps.collision.outputs.tagged_source }}\`"
             echo "- Source commit: \`${{ steps.source.outputs.release_commit }}\`"
             echo "- ZIP: \`${{ steps.build.outputs.zip_name }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
