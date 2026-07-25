@@ -47,13 +47,34 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertEqual(result["release_version_code"], "150")
         self.assertTrue(result["version_code_increases"])
 
-    def test_lower_version_is_rejected(self) -> None:
+    def test_explicit_current_version_reuses_current_code_for_resume(self) -> None:
+        result = resolve_release(
+            current_version="v1.0.1",
+            current_version_code="101",
+            tags=["v1.0.0"],
+            requested_version="v1.0.1",
+        )
+        self.assertEqual(result["release_tag"], "v1.0.1")
+        self.assertEqual(result["release_version_code"], "101")
+        self.assertEqual(result["version_code_source"], "current-version")
+        self.assertFalse(result["metadata_change"])
+
+    def test_lower_version_than_module_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             resolve_release(
                 current_version="v2.0.0",
                 current_version_code="200",
                 tags=[],
                 requested_version="v1.9.9",
+            )
+
+    def test_lower_version_than_latest_tag_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_release(
+                current_version="v1.0.0",
+                current_version_code="100",
+                tags=["v1.2.0"],
+                requested_version="v1.1.0",
             )
 
     def test_lower_version_can_be_resolved_for_exact_release_rebuild(self) -> None:
