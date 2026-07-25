@@ -32,6 +32,7 @@ ROOT_PROVIDER_ALLOW_CREATE=1
 ROOT_PROVIDER_ALLOW_WRITE=1
 ROOT_PROVIDER_ALLOW_RENAME=1
 ROOT_PROVIDER_ALLOW_DELETE=1
+ROOT_PROVIDER_STAGE_DIR=/storage/emulated/0/.TS18-Root-Provider
 ROOT_PROVIDER_STAGE_LIMIT_BYTES=268435456
 FIX_ENABLE_MIXPLORER_PROVIDER=0
 FIX_GRANT_MIXPLORER_STORAGE_PERMS=0
@@ -64,7 +65,7 @@ is_on() {
 
 is_allowed_key() {
   case "$1" in
-    TARGET_USER|BOOT_WAIT_ATTEMPTS|BOOT_WAIT_SECONDS|FIX_ENABLE_AOSP_DOCUMENTSUI|FIX_ENABLE_DOCUMENTSUI_COMPONENTS|FIX_DISABLE_GOOGLE_DOCUMENTSUI|FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR|FIX_ENABLE_EXTERNAL_STORAGE_PROVIDER|FIX_DISABLE_EXTERNAL_STORAGE_TEST_PROVIDER|EXTERNAL_ROOT_MODE|FIX_ENABLE_ROOT_FILE_PROVIDER|FIX_AUTO_GRANT_ROOT_PROVIDER|ROOT_PROVIDER_SHOW_INTERNAL|ROOT_PROVIDER_SHOW_DEVICE|ROOT_PROVIDER_SHOW_USB|ROOT_PROVIDER_ALLOW_CREATE|ROOT_PROVIDER_ALLOW_WRITE|ROOT_PROVIDER_ALLOW_RENAME|ROOT_PROVIDER_ALLOW_DELETE|ROOT_PROVIDER_STAGE_LIMIT_BYTES|FIX_ENABLE_MIXPLORER_PROVIDER|FIX_GRANT_MIXPLORER_STORAGE_PERMS|FIX_GRANT_STORAGE_ACCESS|FIX_CREATE_STANDARD_INTERNAL_DIRS|FIX_REFRESH_PICKER_ON_CHANGE|FIX_WARM_UP_PROVIDERS|DIAG_AUTO_RUN_ON_BOOT|DIAG_OUTPUT_ROOT|DIAG_COPY_RELEVANT_APKS|DIAG_COPY_ALL_APKS|DIAG_MAX_COPY_BYTES) return 0 ;;
+    TARGET_USER|BOOT_WAIT_ATTEMPTS|BOOT_WAIT_SECONDS|FIX_ENABLE_AOSP_DOCUMENTSUI|FIX_ENABLE_DOCUMENTSUI_COMPONENTS|FIX_DISABLE_GOOGLE_DOCUMENTSUI|FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR|FIX_ENABLE_EXTERNAL_STORAGE_PROVIDER|FIX_DISABLE_EXTERNAL_STORAGE_TEST_PROVIDER|EXTERNAL_ROOT_MODE|FIX_ENABLE_ROOT_FILE_PROVIDER|FIX_AUTO_GRANT_ROOT_PROVIDER|ROOT_PROVIDER_SHOW_INTERNAL|ROOT_PROVIDER_SHOW_DEVICE|ROOT_PROVIDER_SHOW_USB|ROOT_PROVIDER_ALLOW_CREATE|ROOT_PROVIDER_ALLOW_WRITE|ROOT_PROVIDER_ALLOW_RENAME|ROOT_PROVIDER_ALLOW_DELETE|ROOT_PROVIDER_STAGE_DIR|ROOT_PROVIDER_STAGE_LIMIT_BYTES|FIX_ENABLE_MIXPLORER_PROVIDER|FIX_GRANT_MIXPLORER_STORAGE_PERMS|FIX_GRANT_STORAGE_ACCESS|FIX_CREATE_STANDARD_INTERNAL_DIRS|FIX_REFRESH_PICKER_ON_CHANGE|FIX_WARM_UP_PROVIDERS|DIAG_AUTO_RUN_ON_BOOT|DIAG_OUTPUT_ROOT|DIAG_COPY_RELEVANT_APKS|DIAG_COPY_ALL_APKS|DIAG_MAX_COPY_BYTES) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -176,6 +177,20 @@ bool_xml() {
   if is_on "$1"; then echo true; else echo false; fi
 }
 
+prepare_stage_dir() {
+  case "$ROOT_PROVIDER_STAGE_DIR" in
+    /storage/emulated/0/*) ;;
+    *)
+      log "invalid root provider staging path; using shared-storage default"
+      ROOT_PROVIDER_STAGE_DIR=/storage/emulated/0/.TS18-Root-Provider
+      ;;
+  esac
+  mkdir -p "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1 || return 1
+  chmod 0777 "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1 || true
+  find "$ROOT_PROVIDER_STAGE_DIR" -maxdepth 1 -type f -name 'root-*.stage' -mmin +60 -delete >> "$LOG" 2>&1 || true
+  log "root provider staging directory ready: $ROOT_PROVIDER_STAGE_DIR"
+}
+
 write_root_provider_prefs() {
   uid=$(pkg_uid "$ROOT_PKG")
   case "$uid" in ''|*[!0-9]*) log "root provider UID unavailable"; return 1 ;; esac
@@ -193,6 +208,7 @@ write_root_provider_prefs() {
     <boolean name="allowWrite" value="$(bool_xml "$ROOT_PROVIDER_ALLOW_WRITE")" />
     <boolean name="allowRename" value="$(bool_xml "$ROOT_PROVIDER_ALLOW_RENAME")" />
     <boolean name="allowDelete" value="$(bool_xml "$ROOT_PROVIDER_ALLOW_DELETE")" />
+    <string name="stageDir">$ROOT_PROVIDER_STAGE_DIR</string>
     <long name="stageLimitBytes" value="$ROOT_PROVIDER_STAGE_LIMIT_BYTES" />
 </map>
 EOPREF
@@ -301,11 +317,22 @@ refresh_picker_once() {
   log "picker cache refreshed for new module/config state"
 }
 
+find_mixplorer_package() {
+  for package in com.mixplorer.silver com.mixplorer; do
+    if pkg_exists "$package"; then
+      echo "$package"
+      return 0
+    fi
+  done
+  echo ""
+}
+
 load_config
 case "$TARGET_USER" in ''|*[!0-9]*) TARGET_USER=0 ;; esac
 case "$BOOT_WAIT_ATTEMPTS" in ''|*[!0-9]*) BOOT_WAIT_ATTEMPTS=45 ;; esac
 case "$BOOT_WAIT_SECONDS" in ''|*[!0-9]*) BOOT_WAIT_SECONDS=2 ;; esac
 case "$ROOT_PROVIDER_STAGE_LIMIT_BYTES" in ''|*[!0-9]*) ROOT_PROVIDER_STAGE_LIMIT_BYTES=268435456 ;; esac
+case "$ROOT_PROVIDER_STAGE_DIR" in /storage/emulated/0/*) ;; *) ROOT_PROVIDER_STAGE_DIR=/storage/emulated/0/.TS18-Root-Provider ;; esac
 
 log "===== TS18 Full File Picker v1.0.0 start ====="
 log "build=$(getprop ro.build.display.id 2>/dev/null) sdk=$(getprop ro.build.version.sdk 2>/dev/null) user=$TARGET_USER"
@@ -346,6 +373,7 @@ fi
 if is_on "$FIX_ENABLE_ROOT_FILE_PROVIDER"; then
   install_helper
   enable_pkg "$ROOT_PKG"
+  prepare_stage_dir
   auto_grant_root
   write_root_provider_prefs
   enable_component "$ROOT_COMPONENT"
@@ -353,9 +381,10 @@ else
   disable_component "$ROOT_COMPONENT"
 fi
 
-if is_on "$FIX_ENABLE_MIXPLORER_PROVIDER" && pkg_exists com.mixplorer; then
-  enable_pkg com.mixplorer
-  enable_component com.mixplorer/.providers.DocProvider
+MIXPLORER_PKG=$(find_mixplorer_package)
+if is_on "$FIX_ENABLE_MIXPLORER_PROVIDER" && [ -n "$MIXPLORER_PKG" ]; then
+  enable_pkg "$MIXPLORER_PKG"
+  enable_component "$MIXPLORER_PKG/com.mixplorer.providers.DocProvider"
 fi
 
 if is_on "$FIX_GRANT_STORAGE_ACCESS"; then
@@ -367,12 +396,12 @@ if is_on "$FIX_GRANT_STORAGE_ACCESS"; then
     set_appop "$package" LEGACY_STORAGE
   done
 fi
-if is_on "$FIX_GRANT_MIXPLORER_STORAGE_PERMS" && pkg_exists com.mixplorer; then
-  grant_if_requested com.mixplorer android.permission.READ_EXTERNAL_STORAGE
-  grant_if_requested com.mixplorer android.permission.WRITE_EXTERNAL_STORAGE
-  set_appop com.mixplorer READ_EXTERNAL_STORAGE
-  set_appop com.mixplorer WRITE_EXTERNAL_STORAGE
-  set_appop com.mixplorer LEGACY_STORAGE
+if is_on "$FIX_GRANT_MIXPLORER_STORAGE_PERMS" && [ -n "$MIXPLORER_PKG" ]; then
+  grant_if_requested "$MIXPLORER_PKG" android.permission.READ_EXTERNAL_STORAGE
+  grant_if_requested "$MIXPLORER_PKG" android.permission.WRITE_EXTERNAL_STORAGE
+  set_appop "$MIXPLORER_PKG" READ_EXTERNAL_STORAGE
+  set_appop "$MIXPLORER_PKG" WRITE_EXTERNAL_STORAGE
+  set_appop "$MIXPLORER_PKG" LEGACY_STORAGE
 fi
 
 if is_on "$FIX_CREATE_STANDARD_INTERNAL_DIRS"; then
