@@ -38,6 +38,10 @@ safe_name() {
   esac
 }
 
+shared_stage_path() {
+  case "$1" in /storage/emulated/0/*) return 0 ;; *) return 1 ;; esac
+}
+
 emit_record() {
   p=$1
   [ -e "$p" ] || [ -L "$p" ] || return 1
@@ -165,18 +169,21 @@ case "$ACTION" in
     destination=$(path_from_arg "${2:-}") || fail "Invalid destination"
     owner=$(path_from_arg "${3:-}") || fail "Invalid owner"
     case "$owner" in ''|*[!0-9]*) fail "Owner UID is not numeric" ;; esac
+    shared_stage_path "$destination" || fail "Staging destination must be under /storage/emulated/0"
     [ -e "$source" ] || [ -L "$source" ] || fail "Source is missing"
     parent=${destination%/*}
     [ -n "$parent" ] || parent=/
     "$BB" mkdir -p "$parent" || fail "Cannot create staging parent"
     "$BB" cp -f "$source" "$destination" || fail "copyout failed"
-    "$BB" chown "$owner:$owner" "$destination" || fail "chown failed"
-    "$BB" chmod 0600 "$destination" || fail "chmod failed"
+    # Shared storage may reject POSIX owner or mode changes; access is granted by sdcardfs/FUSE.
+    "$BB" chown "$owner:$owner" "$destination" 2>/dev/null || true
+    "$BB" chmod 0666 "$destination" 2>/dev/null || true
     ;;
 
   copyin)
     source=$(path_from_arg "${1:-}") || fail "Invalid source"
     destination=$(path_from_arg "${2:-}") || fail "Invalid destination"
+    shared_stage_path "$source" || fail "Staged source must be under /storage/emulated/0"
     [ -f "$source" ] || fail "Staged source is missing"
     if [ -e "$destination" ] && [ ! -d "$destination" ]; then
       # Truncate and rewrite the existing inode to preserve owner and mode.
