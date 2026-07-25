@@ -1,5 +1,23 @@
+import java.util.Properties
+
 plugins {
     id 'com.android.application'
+}
+
+final Properties moduleProperties = new Properties()
+final File modulePropFile = rootProject.file('module/module.prop')
+if (!modulePropFile.isFile()) {
+    throw new GradleException("Missing module metadata: ${modulePropFile}")
+}
+modulePropFile.withInputStream { moduleProperties.load(it) }
+
+final String moduleVersion = moduleProperties.getProperty('version', '').trim()
+final String moduleVersionCode = moduleProperties.getProperty('versionCode', '').trim()
+if (!(moduleVersion ==~ /^v[0-9]+\.[0-9]+\.[0-9]+$/)) {
+    throw new GradleException("module.prop version must use vMAJOR.MINOR.PATCH: ${moduleVersion}")
+}
+if (!(moduleVersionCode ==~ /^[0-9]+$/)) {
+    throw new GradleException("module.prop versionCode must be numeric: ${moduleVersionCode}")
 }
 
 android {
@@ -12,8 +30,8 @@ android {
         // Deliberate: this systemless provider runs only on Android 10/API 29 TS18 units.
         // Targeting 28 retains legacy shared-storage behaviour required by that OEM platform.
         targetSdk 28
-        versionCode 100
-        versionName '1.0.0'
+        versionCode moduleVersionCode.toInteger()
+        versionName moduleVersion.substring(1)
     }
 
     signingConfigs {
