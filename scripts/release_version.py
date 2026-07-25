@@ -95,18 +95,19 @@ def resolve_release(
 
     known = valid_tag_versions(tags)
     latest_tag = known[-1] if known else None
+    release_floor = max([current, *known])
 
     requested_version = requested_version.strip()
     if requested_version:
         target = parse_semver(requested_version, field="version_tag")
         source = "explicit"
-        if target < current and not allow_lower_version:
+        if target < release_floor and not allow_lower_version:
             raise ValueError(
-                f"requested version {target.tag} is lower than module version {current.tag}"
+                f"requested version {target.tag} is lower than current release floor "
+                f"{release_floor.tag}"
             )
     else:
-        base = max([current, *known])
-        target = base.bump_patch()
+        target = release_floor.bump_patch()
         source = "auto-patch"
 
     requested_version_code = requested_version_code.strip()
@@ -115,6 +116,11 @@ def resolve_release(
             raise ValueError("version_code must contain only digits")
         target_code = int(requested_version_code, 10)
         code_source = "explicit"
+    elif requested_version and target == current:
+        # An explicit request for the current, still-untagged version is a safe resume path
+        # after a prior release run committed metadata but failed before creating its tag.
+        target_code = current_code
+        code_source = "current-version"
     else:
         target_code = current_code + 1
         code_source = "auto-increment"
