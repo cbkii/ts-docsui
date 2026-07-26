@@ -3,6 +3,9 @@
 # Change a value, save the file, then reboot.
 # Use 1 for enabled and 0 for disabled unless a comment lists other values.
 
+# Internal configuration migration level. Do not lower this value.
+CONFIG_SCHEMA=2
+
 # Android user that owns the head-unit apps. TS18 normally uses user 0.
 TARGET_USER=0
 
@@ -15,14 +18,28 @@ BOOT_WAIT_SECONDS=2
 # Keep the Android 10 system file picker enabled.
 FIX_ENABLE_AOSP_DOCUMENTSUI=1
 
-# Enable the picker activities needed by apps that choose files or folders.
+# Enable every picker/files activity needed by OPEN_DOCUMENT, GET_CONTENT and folder selection.
 FIX_ENABLE_DOCUMENTSUI_COMPONENTS=1
+
+# Repair app-private data ownership left by older root scripts that used system:system.
+FIX_REPAIR_DOCUMENTSUI_DATA_OWNER=1
 
 # Disable the second Google picker package if it exists, to avoid two competing pickers.
 FIX_DISABLE_GOOGLE_DOCUMENTSUI=1
 
+# Disable and remove the obsolete com.ts18.safprovider experiment when it still exists.
+FIX_DISABLE_STALE_TS18_PROVIDER=1
+FIX_UNINSTALL_STALE_TS18_PROVIDER_FOR_USER=1
+FIX_CLEAR_STALE_TS18_PROVIDER_DATA=1
+
 # Disable App Manager's intent interceptor so it cannot replace or wrap the system picker.
 FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR=1
+
+# Clear stale preferred-activity records for known competing picker packages.
+FIX_CLEAR_PICKER_PREFERRED_ACTIVITIES=1
+
+# Verify that normal Android picker intents resolve to com.android.documentsui after repair.
+FIX_VERIFY_PICKER_RESOLVER=1
 
 # Enable Android's normal shared-storage provider for internal storage and USB drives.
 FIX_ENABLE_EXTERNAL_STORAGE_PROVIDER=1
@@ -31,20 +48,22 @@ FIX_ENABLE_EXTERNAL_STORAGE_PROVIDER=1
 FIX_DISABLE_EXTERNAL_STORAGE_TEST_PROVIDER=1
 
 # Choose how Android's normal internal-storage root is shown.
-# auto = show it only when both the root and its file listing pass a live test.
-# show = always show it. hide = hide advanced internal and USB roots.
-EXTERNAL_ROOT_MODE=auto
+# show = always expose the proven primary: root (recommended for this TS18).
+# auto = hide it only if a bounded live root and child-listing test fails.
+# hide = hide advanced internal and USB roots.
+EXTERNAL_ROOT_MODE=show
 
 # Enable the bundled provider that adds Internal storage (full) and Root file system.
+# Provider discovery itself never invokes su; root is requested only after root-only content is opened.
 FIX_ENABLE_ROOT_FILE_PROVIDER=1
 
 # Automatically allow the bundled provider to use Magisk root without a prompt.
 FIX_AUTO_GRANT_ROOT_PROVIDER=1
 
-# Show /storage/emulated/0 through the bundled root provider as a reliable fallback.
+# Show /storage/emulated/0 through the bundled provider as a reliable fallback.
 ROOT_PROVIDER_SHOW_INTERNAL=1
 
-# Show the complete / filesystem through the bundled root provider.
+# Show the complete / filesystem through the bundled provider.
 ROOT_PROVIDER_SHOW_DEVICE=1
 
 # Show /storage/usbdisk0 and /storage/usbdisk1 when those paths exist.
@@ -86,7 +105,7 @@ FIX_CREATE_STANDARD_INTERNAL_DIRS=1
 # Clear the DocumentsUI root cache once after this module version or important config changes.
 FIX_REFRESH_PICKER_ON_CHANGE=1
 
-# Run small provider queries after setup so roots are ready before first use.
+# Run bounded provider queries after setup so roots are ready before first use.
 FIX_WARM_UP_PROVIDERS=1
 
 # Run diagnostics automatically during boot. Keep disabled for normal use.

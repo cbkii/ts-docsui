@@ -9,6 +9,7 @@ import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.ParcelFileDescriptor;
+import android.os.StatFs;
 import android.provider.DocumentsContract;
 import android.provider.DocumentsContract.Document;
 import android.provider.DocumentsContract.Root;
@@ -17,10 +18,15 @@ import android.util.Log;
 import android.webkit.MimeTypeMap;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -28,6 +34,10 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/**
+ * DocumentsProvider for TS18 storage that keeps picker discovery fast and delegates
+ * root-only file operations to a bounded Magisk helper only after a root is opened.
+ */
 public final class RootDocumentsProvider extends DocumentsProvider {
     public static final String AUTHORITY = "com.cbkii.tsdocsui.root.documents";
 
@@ -77,20 +87,24 @@ public final class RootDocumentsProvider extends DocumentsProvider {
         return true;
     }
 
+    /**
+     * Picker startup calls this for every DocumentsProvider. Never call su here: a missing
+     * Magisk policy or root prompt would otherwise block the complete system picker.
+     */
     @Override
     public Cursor queryRoots(String[] projection) {
         MatrixCursor cursor = new MatrixCursor(resolveRootProjection(projection));
         SharedPreferences prefs = prefs();
 
         if (prefs.getBoolean("showInternal", true)) {
-            addRoot(cursor, ROOT_INTERNAL, "/storage/emulated/0", getString(R.string.root_internal));
+            addFastRoot(cursor, ROOT_INTERNAL, "/storage/emulated/0", getString(R.string.root_internal), false);
         }
         if (prefs.getBoolean("showDevice", true)) {
-            addRoot(cursor, ROOT_DEVICE, "/", getString(R.string.root_device));
+            addFastRoot(cursor, ROOT_DEVICE, "/", getString(R.string.root_device), true);
         }
         if (prefs.getBoolean("showUsb", true)) {
-            addRootIfPresent(cursor, ROOT_USB0, "/storage/usbdisk0", getString(R.string.root_usb0));
-            addRootIfPresent(cursor, ROOT_USB1, "/storage/usbdisk1", getString(R.string.root_usb1));
+            addFastRoot(cursor, ROOT_USB0, "/storage/usbdisk0", getString(R.string.root_usb0), false);
+            addFastRoot(cursor, ROOT_USB1, "/storage/usbdisk1", getString(R.string.root_usb1), false);
         }
         return cursor;
     }
@@ -99,20 +113,30 @@ public final class RootDocumentsProvider extends DocumentsProvider {
     public Cursor queryDocument(String documentId, String[] projection) throws FileNotFoundException {
         MatrixCursor cursor = new MatrixCursor(resolveDocumentProjection(projection));
         ParsedId parsed = parseDocumentId(documentId);
-        includeDocument(cursor, parsed.rootId, requireEntry(parsed.path));
+        includeDocument(cursor, parsed.rootId, requireEntry(parsed));
         return cursor;
     }
 
     @Override
     public Cursor queryChildDocuments(String parentDocumentId, String[] projection, String sortOrder)
             throws FileNotFoundException {
+        return queryChildDocumentsInternal(parentDocumentId, projection, null);
+    }
+
+    private Cursor queryChildDocumentsInternal(String parentDocumentId, String[] projection,
+                                                CancellationSignal signal) throws FileNotFoundException {
         MatrixCursor cursor = new MatrixCursor(resolveDocumentProjection(projection));
         ParsedId parent = parseDocumentId(parentDocumentId);
-        RootEntry parentEntry = requireEntry(parent.path);
+        RootEntry parentEntry = requireEntry(parent);
         if (!parentEntry.isDirectory()) {
             throw new FileNotFoundException("Not a directory: " + parent.path);
         }
-        for (RootEntry child : RootShell.list(parent.path)) {
+
+        List<RootEntry> children = listEntries(parent);
+        for (RootEntry child : children) {
+            if (signal != null) {
+                signal.throwIfCanceled();
+            }
             includeDocument(cursor, parent.rootId, child);
         }
         return cursor;
@@ -216,14 +240,14 @@ public final class RootDocumentsProvider extends DocumentsProvider {
     @Override
     public String getDocumentType(String documentId) throws FileNotFoundException {
         ParsedId parsed = parseDocumentId(documentId);
-        return mimeType(requireEntry(parsed.path));
+        return mimeType(requireEntry(parsed));
     }
 
     @Override
     public ParcelFileDescriptor openDocument(String documentId, String mode,
-                                             CancellationSignal signal) throws FileNotFoundException {
+                                              CancellationSignal signal) throws FileNotFoundException {
         ParsedId parsed = parseDocumentId(documentId);
-        RootEntry entry = requireEntry(parsed.path);
+        RootEntry entry = requireEntry(parsed);
         if (entry.isDirectory()) {
             throw new FileNotFoundException("Cannot open a directory: " + parsed.path);
         }
@@ -248,7 +272,7 @@ public final class RootDocumentsProvider extends DocumentsProvider {
     }
 
     private ParcelFileDescriptor openStaged(String sourcePath, String mode, boolean writable,
-                                            CancellationSignal signal) throws FileNotFoundException {
+                                             CancellationSignal signal) throws FileNotFoundException {
         String configuredStageDir = prefs().getString("stageDir", DEFAULT_STAGE_DIR);
         if (configuredStageDir == null
                 || !normalizePath(configuredStageDir).startsWith("/storage/emulated/0/")) {
@@ -267,8 +291,10 @@ public final class RootDocumentsProvider extends DocumentsProvider {
         }
 
         try {
-            RootEntry existing = RootShell.stat(sourcePath);
-            if (existing != null && shouldStageExistingContent(mode)) {
+            if (shouldStageExistingContent(mode)
+                    && !copyOutLocally(sourcePath, stage)) {
+                // RootShell.copyOut throws on denial, timeout, or copy failure. Failing the open
+                // prevents an empty stage from being served or copied back over existing data.
                 RootShell.copyOut(sourcePath, stage, android.os.Process.myUid());
             }
             if (signal != null) {
@@ -293,6 +319,26 @@ public final class RootDocumentsProvider extends DocumentsProvider {
             //noinspection ResultOfMethodCallIgnored
             stage.delete();
             throw fileNotFound("Open failed", e);
+        }
+    }
+
+    private static boolean copyOutLocally(String sourcePath, File destination) {
+        File source = new File(sourcePath);
+        if (!source.isFile() || !source.canRead()) {
+            return false;
+        }
+        try (InputStream input = new FileInputStream(source);
+             OutputStream output = new FileOutputStream(destination, false)) {
+            byte[] buffer = new byte[64 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                output.write(buffer, 0, count);
+            }
+            output.flush();
+            return true;
+        } catch (IOException | SecurityException failure) {
+            Log.d(TAG, "Direct stage initialisation unavailable for " + sourcePath, failure);
+            return false;
         }
     }
 
@@ -331,7 +377,9 @@ public final class RootDocumentsProvider extends DocumentsProvider {
                     if (out != null) {
                         try {
                             out.close();
-                        } catch (IOException ignored) {}
+                        } catch (IOException ignored) {
+                            // Best-effort descriptor cleanup.
+                        }
                     }
                     if (rootProcess != null) {
                         rootProcess.destroy();
@@ -344,17 +392,16 @@ public final class RootDocumentsProvider extends DocumentsProvider {
         }
     }
 
-    private void addRootIfPresent(MatrixCursor cursor, String rootId, String path, String title) {
-        if (RootShell.stat(path) != null) {
-            addRoot(cursor, rootId, path, title);
-        }
-    }
-
-    private void addRoot(MatrixCursor cursor, String rootId, String path, String title) {
-        RootEntry entry = RootShell.stat(path);
-        if (entry == null || !entry.isDirectory()) {
+    private void addFastRoot(MatrixCursor cursor, String rootId, String path, String title,
+                             boolean alwaysPresent) {
+        RootEntry entry = localEntry(path);
+        if (!alwaysPresent && (entry == null || !entry.isDirectory())) {
             return;
         }
+        if (entry == null) {
+            entry = syntheticRootEntry(path);
+        }
+
         MatrixCursor.RowBuilder row = cursor.newRow();
         row.add(Root.COLUMN_ROOT_ID, rootId);
         row.add(Root.COLUMN_MIME_TYPES, "*/*");
@@ -364,7 +411,89 @@ public final class RootDocumentsProvider extends DocumentsProvider {
         row.add(Root.COLUMN_TITLE, title);
         row.add(Root.COLUMN_SUMMARY, path);
         row.add(Root.COLUMN_DOCUMENT_ID, buildDocumentId(rootId, path));
-        row.add(Root.COLUMN_AVAILABLE_BYTES, RootShell.availableBytes(path));
+        row.add(Root.COLUMN_AVAILABLE_BYTES, localAvailableBytes(path));
+    }
+
+    private RootEntry requireEntry(ParsedId parsed) throws FileNotFoundException {
+        RootEntry entry = entryFor(parsed);
+        if (entry == null) {
+            throw new FileNotFoundException("Path is unavailable: " + parsed.path);
+        }
+        return entry;
+    }
+
+    private RootEntry entryFor(ParsedId parsed) {
+        RootEntry local = localEntry(parsed.path);
+        if (local != null) {
+            return local;
+        }
+        if (isRootPath(parsed.rootId, parsed.path)) {
+            return syntheticRootEntry(parsed.path);
+        }
+        return RootShell.stat(parsed.path);
+    }
+
+    private List<RootEntry> listEntries(ParsedId parent) {
+        // The device root itself is usually listable without privilege. Returning that shallow
+        // level locally prevents DocumentsUI prefetch from invoking su during launch; deeper
+        // root-only directories still use the bounded helper after the user opens them.
+        if (!ROOT_DEVICE.equals(parent.rootId) || "/".equals(parent.path)) {
+            List<RootEntry> local = localChildren(parent.path);
+            if (local != null) {
+                return local;
+            }
+        }
+        return RootShell.list(parent.path);
+    }
+
+    private static RootEntry localEntry(String path) {
+        File file = new File(path);
+        if (!file.exists()) {
+            return null;
+        }
+        String type;
+        if (file.isDirectory()) {
+            type = "d";
+        } else if (file.isFile()) {
+            type = "f";
+        } else {
+            type = "o";
+        }
+        String name = "/".equals(path) ? "/" : file.getName();
+        return new RootEntry(type, file.isFile() ? file.length() : 0L,
+                file.lastModified(), "local", name, normalizePath(file.getAbsolutePath()));
+    }
+
+    /** Returns null when direct app access cannot enumerate the directory. */
+    private static List<RootEntry> localChildren(String path) {
+        File directory = new File(path);
+        File[] files = directory.listFiles();
+        if (files == null) {
+            return null;
+        }
+        Arrays.sort(files, Comparator.comparing(File::getName, String.CASE_INSENSITIVE_ORDER));
+        List<RootEntry> entries = new ArrayList<>(files.length);
+        for (File file : files) {
+            RootEntry entry = localEntry(file.getAbsolutePath());
+            if (entry != null) {
+                entries.add(entry);
+            }
+        }
+        return entries;
+    }
+
+    private static RootEntry syntheticRootEntry(String path) {
+        String normalized = normalizePath(path);
+        String name = "/".equals(normalized) ? "/" : new File(normalized).getName();
+        return new RootEntry("d", 0L, 0L, "root", name, normalized);
+    }
+
+    private static long localAvailableBytes(String path) {
+        try {
+            return new StatFs(path).getAvailableBytes();
+        } catch (RuntimeException ignored) {
+            return -1L;
+        }
     }
 
     private void includeDocument(MatrixCursor cursor, String rootId, RootEntry entry) {
@@ -419,14 +548,6 @@ public final class RootDocumentsProvider extends DocumentsProvider {
             return getString(R.string.root_device);
         }
         return entry.name == null || entry.name.isEmpty() ? entry.path : entry.name;
-    }
-
-    private RootEntry requireEntry(String path) throws FileNotFoundException {
-        RootEntry entry = RootShell.stat(path);
-        if (entry == null) {
-            throw new FileNotFoundException("Path is unavailable: " + path);
-        }
-        return entry;
     }
 
     private void ensureCreateAllowed() throws FileNotFoundException {
@@ -559,36 +680,34 @@ public final class RootDocumentsProvider extends DocumentsProvider {
         return context == null ? "TS18 storage" : context.getString(id);
     }
 
-    private void notifyChildren(String parentDocumentId) {
-        Context context = getContext();
-        if (context == null) {
-            return;
-        }
-        Uri uri = DocumentsContract.buildChildDocumentsUri(AUTHORITY, parentDocumentId);
-        context.getContentResolver().notifyChange(uri, null, false);
+    private String[] resolveRootProjection(String[] projection) {
+        return projection == null ? DEFAULT_ROOT_PROJECTION : projection;
+    }
+
+    private String[] resolveDocumentProjection(String[] projection) {
+        return projection == null ? DEFAULT_DOCUMENT_PROJECTION : projection;
     }
 
     private void notifyDocument(String documentId) {
         Context context = getContext();
-        if (context == null) {
-            return;
+        if (context != null) {
+            Uri uri = DocumentsContract.buildDocumentUri(AUTHORITY, documentId);
+            context.getContentResolver().notifyChange(uri, null);
         }
-        Uri uri = DocumentsContract.buildDocumentUri(AUTHORITY, documentId);
-        context.getContentResolver().notifyChange(uri, null, false);
     }
 
-    private static String[] resolveRootProjection(String[] projection) {
-        return projection == null ? DEFAULT_ROOT_PROJECTION : projection;
+    private void notifyChildren(String parentDocumentId) {
+        Context context = getContext();
+        if (context != null) {
+            Uri uri = DocumentsContract.buildChildDocumentsUri(AUTHORITY, parentDocumentId);
+            context.getContentResolver().notifyChange(uri, null);
+        }
     }
 
-    private static String[] resolveDocumentProjection(String[] projection) {
-        return projection == null ? DEFAULT_DOCUMENT_PROJECTION : projection;
-    }
-
-    private static FileNotFoundException fileNotFound(String message, Throwable cause) {
-        FileNotFoundException exception = new FileNotFoundException(message + ": " + cause.getMessage());
-        exception.initCause(cause);
-        return exception;
+    private static FileNotFoundException fileNotFound(String message, Exception cause) {
+        FileNotFoundException failure = new FileNotFoundException(message + ": " + cause.getMessage());
+        failure.initCause(cause);
+        return failure;
     }
 
     private static final class ParsedId {

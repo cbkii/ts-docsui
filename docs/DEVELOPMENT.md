@@ -30,7 +30,8 @@ Client app
      -> stock com.android.externalstorage.documents
         -> /storage/emulated/0 and mounted TS18 USB volumes
      -> com.cbkii.tsdocsui.root.documents
-        -> Magisk su helper
+        -> local discovery and shared-storage listing
+        -> bounded Magisk helper after root-only content is opened
            -> / and root-only paths
 ```
 
@@ -54,14 +55,14 @@ The remaining failure was in DocumentsUI preferences. This Android 10/Pie picker
 includeDeviceRoot-<action>
 ```
 
-The module writes `includeDeviceRoot-1` through `includeDeviceRoot-8`, together with older compatibility keys. In the default `EXTERNAL_ROOT_MODE=auto`, the values are enabled only after bounded live queries confirm both:
+The module writes `includeDeviceRoot-1` through `includeDeviceRoot-8`, together with older compatibility keys. The default `EXTERNAL_ROOT_MODE=show` keeps the exact-device-proven `primary:` root visible. Optional `auto` mode hides it only after a bounded live check definitively fails; a missing timeout implementation or transient query failure leaves it visible.
 
 ```text
 content://com.android.externalstorage.documents/root
 content://com.android.externalstorage.documents/document/primary%3A/children
 ```
 
-After an important module or configuration change, the service removes the DocumentsUI root cache once and force-stops DocumentsUI. The next picker launch reads the corrected preferences.
+After an important module or configuration change, the service repairs DocumentsUI data ownership, disables the obsolete `com.ts18.safprovider` experiment and App Manager picker interception, enables the known picker entry points, removes the DocumentsUI root cache once, and force-stops DocumentsUI. The next picker launch reads the corrected preferences.
 
 ## Root-provider operation
 
@@ -77,6 +78,8 @@ The provider uses a narrow helper installed at:
 ```text
 /data/adb/ts18-documentsui-saf/rootfs-helper.sh
 ```
+
+Provider discovery never invokes `su`. Root metadata calls are bounded to four seconds and directory listings to eight seconds. Shared-storage files are copied to the staging file directly when the provider can read them; root-only paths fall back to the Magisk helper. If neither copy can initialise an existing file, the open fails before an empty staging file can be returned or copied back over the source.
 
 The module attempts to create a Magisk allow policy for the provider UID. If automatic policy creation is unavailable, Magisk may show a normal root request.
 
@@ -102,7 +105,7 @@ Important defaults include:
 
 - keeping AOSP DocumentsUI enabled;
 - keeping the stock ExternalStorageProvider enabled;
-- showing internal storage only after live provider checks pass;
+- showing the proven internal-storage root unless the user explicitly selects another mode;
 - enabling the root provider;
 - allowing create, write, rename, move, copy, and delete operations where the filesystem permits them;
 - keeping automatic boot diagnostics disabled.
