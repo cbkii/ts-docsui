@@ -438,10 +438,20 @@ find_mixplorer_package() {
 
 resolve_picker_action() {
   action=$1
-  output=$(run_bounded_sh 6 "cmd package resolve-activity --brief --user '$TARGET_USER' -a '$action'" 2>&1)
+  case "$action" in
+    android.intent.action.OPEN_DOCUMENT_TREE)
+      query="cmd package resolve-activity --brief --user '$TARGET_USER' -a '$action'"
+      fallback="cmd package resolve-activity --brief -a '$action'"
+      ;;
+    *)
+      query="cmd package resolve-activity --brief --user '$TARGET_USER' -a '$action' -c android.intent.category.OPENABLE -t '*/*'"
+      fallback="cmd package resolve-activity --brief -a '$action' -c android.intent.category.OPENABLE -t '*/*'"
+      ;;
+  esac
+  output=$(run_bounded_sh 6 "$query" 2>&1)
   rc=$?
   if [ "$rc" -ne 0 ] || [ -z "$output" ]; then
-    output=$(run_bounded_sh 6 "cmd package resolve-activity --brief -a '$action'" 2>&1)
+    output=$(run_bounded_sh 6 "$fallback" 2>&1)
     rc=$?
   fi
   echo "resolve $action rc=$rc: $output" >> "$LOG"
@@ -589,7 +599,9 @@ case "$EXTERNAL_ROOT_MODE" in
     ;;
 esac
 write_documentsui_prefs "$external_show" || true
-repair_package_data_owner com.android.documentsui || true
+if is_on "$FIX_REPAIR_DOCUMENTSUI_DATA_OWNER"; then
+  repair_package_data_owner com.android.documentsui || true
+fi
 refresh_picker_once "$external_show"
 
 if is_on "$FIX_WARM_UP_PROVIDERS"; then
