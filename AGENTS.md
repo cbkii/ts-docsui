@@ -57,4 +57,3 @@ For release-path changes, build the exact ZIP and checksum, run `scripts/make-up
 Before calling a PR review-ready, inspect the complete diff, changed-file inventory, reviews, comments and all check states on the current head. Classify every finding as valid, already fixed, stale, duplicate, false positive, out of scope or an external boundary. Remove temporary files and stale documentation. Do not repeatedly rerun an unchanged deterministic failure.
 
 For high-risk release, signing, root or boot-time changes, explain in plain English what can fail, who or what is affected, the protections in place and the rollback path.
-

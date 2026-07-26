@@ -47,4 +47,3 @@ Project guides:
 ## Safety
 
 The module does not flash firmware partitions. The **Root file system** entry has real root access, so do not change or delete files that you do not understand.
-

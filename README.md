@@ -70,4 +70,3 @@ The **Root file system** entry has real root access. Do not change or delete fil
 ## Technical information
 
 Developers and advanced users should read the [technical and developer guide](docs/DEVELOPMENT.md).
-
