@@ -10,7 +10,7 @@ User guides:
 
 ## Scope
 
-This project targets Topway TS18 Android 10 head units on UIS8581A / SC9863A hardware with Magisk 28 or later.
+This project targets Topway TS18 Android 10 head units on UIS8581A / SP9863A hardware with Magisk 28 or later.
 
 Do not assume that TS18, TS10, TS10S, or other UIS8581A units are interchangeable. Firmware, board, panel, boot, LCD, MCU, CAN, and populated hardware must match before any device-level change.
 

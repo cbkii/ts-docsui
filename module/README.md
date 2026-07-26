@@ -16,7 +16,7 @@ After reboot, the picker can show:
 ## Requirements
 
 - Topway TS18 with Android 10;
-- UIS8581A / SC9863A TS18 hardware;
+- UIS8581A / SP9863A TS18 hardware;
 - Magisk 28 or later already working.
 
 Do not use this module on TS10, TS10S, or unrelated units.

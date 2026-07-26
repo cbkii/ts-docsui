@@ -21,7 +21,7 @@ This module restores the normal Android 10 file picker and adds an extra root fi
 ## Requirements
 
 - A Topway **TS18** unit with Android 10.
-- UIS8581A / SC9863A TS18 hardware.
+- UIS8581A / SP9863A TS18 hardware.
 - Magisk 28 or later already working.
 
 This module is not for TS10, TS10S, or unrelated units that only look similar.
