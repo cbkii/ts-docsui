@@ -1,6 +1,6 @@
 id=ts18_documentsui_saf_full
 name=TS18 Full File Picker
-version=v1.2.0
-versionCode=120
+version=v1.2.1
+versionCode=121
 author=cbkii
 description=Shows all internal storage and adds a Magisk-root file provider for the full device.
