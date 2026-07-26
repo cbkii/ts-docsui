@@ -1,54 +1,50 @@
 # TS18 Full File Picker
 
-This Magisk module repairs the Android 10 system file picker on TS18-class head units.
+This Magisk module fixes the Android file picker on supported TS18 Android 10 car head units.
 
-## What it provides
+## What it fixes
 
-- Android 10 DocumentsUI for `GET_CONTENT`, `OPEN_DOCUMENT`, `CREATE_DOCUMENT`, and `OPEN_DOCUMENT_TREE`.
-- The stock Android `primary:` root for all of `/storage/emulated/0`, shown by default.
-- Action-scoped `includeDeviceRoot-1` through `includeDeviceRoot-8` preferences required by the bundled Android 10 picker.
-- A separate **Internal storage (full)** source that lists shared storage without invoking root during picker startup.
-- A **Root file system** source for `/`, including app-private and system paths ordinary storage permissions cannot read.
-- Optional TS18 USB roots at `/storage/usbdisk0` and `/storage/usbdisk1`.
-- Create, read, write, rename, move, copy, and delete operations where the mounted filesystem permits them.
-- Manual diagnostics exported to `/storage/emulated/0/Download/TS18-SAF-Diagnostics`.
+Some TS18 units show only **Downloads** and USB storage in the file picker. This module makes the rest of the internal storage available and adds a separate root file source.
 
-## Important behaviour
+After reboot, the picker can show:
 
-The normal Android ExternalStorageProvider remains the preferred provider for `/storage/emulated/0`. Exact TS18 diagnostics proved that it publishes `primary:` and enumerates the internal-storage top level.
+- normal internal storage;
+- **Internal storage (full)**;
+- **Root file system**;
+- connected TS18 USB storage.
 
-Picker discovery never invokes `su`. The bundled root provider registers its roots and returns local metadata first; bounded Magisk helper calls begin only after root-only content is opened. A missing root policy therefore cannot freeze the normal picker or stock internal-storage source.
+## Requirements
 
-During upgrade the module repairs DocumentsUI private-data ownership, disables the obsolete `com.ts18.safprovider` experiment and App Manager picker interception, enables the complete DocumentsUI entrypoint set, clears stale preferred-activity state, and records resolver health under `/data/adb/ts18-documentsui-saf/`.
+- Topway TS18 with Android 10;
+- UIS8581A / SP9863A TS18 hardware;
+- Magisk 28 or later already working.
 
-Pre-schema-2 runtime configuration is backed up and migrated once to keep exact-device-proven `primary:` visible. Later user choices are preserved.
+Do not use this module on TS10, TS10S, or unrelated units.
 
-Root cannot make read-only device-mapper mounts writable. `/system`, `/vendor`, and similar partitions remain read-only; the provider can still browse and read them.
+This module does not install Magisk and does not root the head unit.
 
-Seekable root-file editing uses `/storage/emulated/0/.TS18-Root-Provider`. Closed staging files are removed and stale files are cleaned during boot. The module does not use `/tmp`, `/cache`, or `/data/local/tmp` for runtime staging.
+## Installation
 
-## Configuration
+Install the ZIP from **Magisk > Modules > Install from storage**, then reboot.
 
-Edit `/data/adb/ts18-documentsui-saf.conf`, then reboot. Every setting is documented in the file.
+If Magisk asks for root access for the file provider, allow it.
 
-## Manual picker test
+## Help and diagnostics
 
-```sh
-su -c '/data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-launch.sh internal'
+In Magisk, open this module and press **Action**. The diagnostic ZIP is saved under:
+
+```text
+/storage/emulated/0/Download/TS18-SAF-Diagnostics/
 ```
 
-Resolver and launch output is written to `/storage/emulated/0/Download/TS18-SAF-launch.log`.
+Project guides:
 
-## Diagnostics
+- English: https://github.com/cbkii/ts-docsui/blob/main/README.md
+- 简体中文: https://github.com/cbkii/ts-docsui/blob/main/README.zh-CN.md
+- Русский: https://github.com/cbkii/ts-docsui/blob/main/README.ru.md
+- Technical guide: https://github.com/cbkii/ts-docsui/blob/main/docs/DEVELOPMENT.md
 
-Press **Action** in Magisk, or run:
+## Safety
 
-```sh
-su -c '/data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh full'
-```
+The module does not flash firmware partitions. The **Root file system** entry has real root access, so do not change or delete files that you do not understand.
 
-The verified archive is written under `/storage/emulated/0/Download/TS18-SAF-Diagnostics/`.
-
-## Rollback
-
-Disable or remove the module in Magisk and reboot. No boot, MCU, CAN, LCD, logo, or firmware partition is modified.

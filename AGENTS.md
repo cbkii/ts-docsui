@@ -15,7 +15,7 @@ Do not stop at a plan or an unpushed patch when the user has authorised a later 
 - `module/module.prop` is the authoritative persistent release version source.
 - `rootprovider/build.gradle` must derive Android `versionName` and `versionCode` from `module/module.prop`.
 - Any unavoidable runtime version marker must be generated from `module/module.prop` by `scripts/sync_runtime_version.py`; never hand-edit only one copy.
-- Keep the stock `com.android.externalstorage.documents` provider. The bundled root provider uses the separate package and authority documented in `README.md`.
+- Keep the stock `com.android.externalstorage.documents` provider. The bundled root provider uses the separate package and authority documented in `docs/DEVELOPMENT.md`.
 - Do not add or restore obsolete `ExternalStorageProvider.apk` or earlier experimental TS18 provider payloads.
 - Magisk ZIPs must remain deterministic, STORE-only, non-ZIP64 and installable by the existing Magisk installer wrapper.
 - Never claim physical TS18 behaviour was proven by CI. Device acceptance remains an explicit external validation boundary.
@@ -57,3 +57,4 @@ For release-path changes, build the exact ZIP and checksum, run `scripts/make-up
 Before calling a PR review-ready, inspect the complete diff, changed-file inventory, reviews, comments and all check states on the current head. Classify every finding as valid, already fixed, stale, duplicate, false positive, out of scope or an external boundary. Remove temporary files and stale documentation. Do not repeatedly rerun an unchanged deterministic failure.
 
 For high-risk release, signing, root or boot-time changes, explain in plain English what can fail, who or what is affected, the protections in place and the rollback path.
+
