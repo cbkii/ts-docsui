@@ -2,43 +2,44 @@
 from __future__ import annotations
 
 import argparse
-import json
+import sys
 from pathlib import Path
 
-
-def parse_prop(path: Path) -> dict[str, str]:
-    props: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" in line:
-            key, value = line.split("=", 1)
-            props[key.strip()] = value.strip()
-    return props
+try:
+    from scripts.release_assets import atomic_write_json, validate_release_assets
+except ModuleNotFoundError:
+    from release_assets import atomic_write_json, validate_release_assets
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate Magisk update.json for a release asset.")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Generate and validate Magisk update.json for an exact release asset."
+    )
     parser.add_argument("--module-dir", type=Path, default=Path("module"))
     parser.add_argument("--repository", required=True, help="owner/repo")
     parser.add_argument("--tag", required=True)
     parser.add_argument("--zip-name", required=True)
     parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    props = parse_prop(args.module_dir / "module.prop")
-    version_code = props["versionCode"]
-    payload = {
-        "version": props["version"],
-        "versionCode": int(version_code, 10),
-        "zipUrl": f"https://github.com/{args.repository}/releases/download/{args.tag}/{args.zip_name}",
-        "changelog": f"https://github.com/{args.repository}/releases/tag/{args.tag}",
-    }
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(args.out)
-    return 0
+    zip_path = args.out.parent / args.zip_name
+    checksum_path = zip_path.with_suffix(zip_path.suffix + ".sha256")
+    try:
+        payload, digest = validate_release_assets(
+            module_dir=args.module_dir,
+            repository=args.repository,
+            tag=args.tag,
+            zip_path=zip_path,
+            checksum_path=checksum_path,
+        )
+        atomic_write_json(args.out, payload)
+        print(f"OK update metadata: {args.out}")
+        print(f"zip={zip_path}")
+        print(f"sha256={digest}")
+        return 0
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
