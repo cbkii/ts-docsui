@@ -26,6 +26,8 @@
 
 本模块不适用于 TS10、TS10S 或仅外观相似的其他主机。
 
+本模块不会安装 Magisk，也不会自行取得 Root 权限。
+
 ## Root 固件来源
 
 本项目使用的 TS18 Magisk Root 固件来自 [4PDA 的 Topway TS10 和 TS18 社区主题](https://4pda.to/forum/index.php?showtopic=1015856)。
