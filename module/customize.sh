@@ -84,6 +84,7 @@ merge_config() {
     return 0
   fi
 
+  # Pre-schema-2 files legitimately lack this key; suppressed stderr keeps the Magisk UI clean.
   old_schema=$(sed -n 's/^CONFIG_SCHEMA=//p' "$CFG" 2>/dev/null | head -n 1)
   case "$old_schema" in ''|*[!0-9]*) old_schema=0 ;; esac
 
@@ -100,21 +101,32 @@ merge_config() {
     case "$key" in *[!A-Z0-9_]*) continue ;; esac
     grep -q "^${key}=" "$default_file" 2>/dev/null || continue
     case "$value" in ''|*[!A-Za-z0-9_./:-]*) continue ;; esac
-    sed -i "s|^${key}=.*|${key}=${value}|" "$merged" 2>/dev/null || true
+    if ! sed -i "s|^${key}=.*|${key}=${value}|" "$merged" 2>/dev/null; then
+      warn "Could not preserve runtime config key: $key"
+      # Best-effort removal of our incomplete temporary merge file.
+      rm -f "$merged" 2>/dev/null || true
+      return 1
+    fi
   done < "$CFG"
 
   # Schema 2 repairs the v1.0.1 launch regression. Earlier configs used auto mode,
   # which could hide the proven primary: root after one transient boot query.
   if [ "$old_schema" -lt 2 ]; then
-    sed -i \
+    if sed -i \
       -e 's/^CONFIG_SCHEMA=.*/CONFIG_SCHEMA=2/' \
       -e 's/^EXTERNAL_ROOT_MODE=.*/EXTERNAL_ROOT_MODE=show/' \
       -e 's/^FIX_REPAIR_DOCUMENTSUI_DATA_OWNER=.*/FIX_REPAIR_DOCUMENTSUI_DATA_OWNER=1/' \
       -e 's/^FIX_DISABLE_STALE_TS18_PROVIDER=.*/FIX_DISABLE_STALE_TS18_PROVIDER=1/' \
       -e 's/^FIX_CLEAR_PICKER_PREFERRED_ACTIVITIES=.*/FIX_CLEAR_PICKER_PREFERRED_ACTIVITIES=1/' \
       -e 's/^FIX_VERIFY_PICKER_RESOLVER=.*/FIX_VERIFY_PICKER_RESOLVER=1/' \
-      "$merged" 2>/dev/null || true
-    note "- Migrated picker repair settings to schema 2"
+      "$merged" 2>/dev/null; then
+      note "- Migrated picker repair settings to schema 2"
+    else
+      warn "Could not apply schema-2 picker repair defaults"
+      # Best-effort removal of our incomplete temporary merge file.
+      rm -f "$merged" 2>/dev/null || true
+      return 1
+    fi
   fi
 
   mv -f "$merged" "$CFG" 2>/dev/null || return 1
