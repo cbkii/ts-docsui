@@ -1,79 +1,72 @@
-# TS18 Full File Picker Magisk Module
+# TS18 Full File Picker
 
-Magisk 28+ module for TS18 Android 10 head units. It restores the Android system file picker, exposes all of `/storage/emulated/0`, and adds a Magisk-root DocumentsProvider for browsing and selecting files or folders anywhere under `/`.
+[English](README.md) | [简体中文](README.zh-CN.md) | [Русский](README.ru.md)
 
-## Module identity
+This Magisk module fixes the Android file picker on supported TS18 car head units.
 
-- `id=ts18_documentsui_saf_full`
-- Release version and version code are read from `module/module.prop`.
+## Why this module exists
 
-The module ID intentionally matches existing TS18 SAF module installations so this release upgrades them instead of creating a second active overlay.
+On some TS18 units, the file picker shows only **Downloads** and USB storage. Apps cannot choose files or folders from the rest of the internal storage.
 
-## Architecture
+This module restores the normal Android 10 file picker and adds an extra root file source.
+
+## What it provides
+
+- Access to all normal internal storage under `/storage/emulated/0`.
+- An extra **Internal storage (full)** entry.
+- A **Root file system** entry for files that need Magisk root access.
+- TS18 USB storage when a USB drive is connected.
+- File and folder selection for apps that use the Android system picker.
+
+## Requirements
+
+- A Topway **TS18** unit with Android 10.
+- UIS8581A / SP9863A TS18 hardware.
+- Magisk 28 or later already working.
+
+This module is not for TS10, TS10S, or unrelated units that only look similar.
+
+This module does not install Magisk and does not root the head unit.
+
+## Source of the rooted firmware
+
+The Magisk-rooted TS18 firmware used with this project is sourced from the [Topway TS10 and TS18 community topic on 4PDA](https://4pda.to/forum/index.php?showtopic=1015856).
+
+4PDA is a third-party community. This project does not create, host, or verify the firmware found there.
+
+Only use firmware that exactly matches your unit's system version, board, screen, panel, and boot configuration. The wrong firmware can stop the unit from starting. Make a full backup before changing firmware. Stop when the match is not certain.
+
+You do not need to reinstall firmware when Magisk already works on your unit.
+
+## Installation
+
+1. Download the module ZIP from the [latest release](https://github.com/cbkii/ts-docsui/releases/latest).
+2. Open **Magisk**.
+3. Open **Modules** and choose **Install from storage**.
+4. Select the downloaded ZIP.
+5. Reboot the head unit.
+
+After the reboot, open a file picker from an app. You should see normal internal storage, full internal storage, and the root file system. USB entries appear only when USB storage is connected.
+
+## When it does not work
+
+1. Confirm that the unit is TS18, Android 10, and already rooted with Magisk.
+2. Reboot once after installing or updating the module.
+3. In Magisk, open this module and press **Action**.
+4. Find the diagnostic ZIP in:
 
 ```text
-Client app
-  -> Android DocumentsUI picker
-     -> stock com.android.externalstorage.documents
-        -> /storage/emulated/0 and mounted TS18 USB volumes
-     -> com.cbkii.tsdocsui.root.documents
-        -> Magisk su helper
-           -> / and root-only paths
+/storage/emulated/0/Download/TS18-SAF-Diagnostics/
 ```
 
-The stock ExternalStorageProvider is retained rather than replaced. Current TS18 diagnostics prove that its `primary:` root and `primary:/children` query successfully enumerate `/storage/emulated/0`; previous module releases hid that working root through DocumentsUI preferences. The root provider is a separate package and authority, so it cannot collide with the stock provider.
+Attach that ZIP to a new GitHub issue. Do not install different firmware only to test this module.
 
-## Action-scoped internal-storage fix
+## Safety
 
-Android 10 DocumentsUI does not read one global `includeDeviceRoot` preference for every picker flow. It reads an action-scoped key such as `includeDeviceRoot-3` for `OPEN_DOCUMENT` or `includeDeviceRoot-6` for `OPEN_DOCUMENT_TREE`. Earlier module code wrote only the unsuffixed key, so the provider could successfully return `primary:` and every top-level folder while the visible picker still filtered the root out.
+The module is systemless. It does not flash boot, MCU, CAN, LCD, logo, or firmware partitions.
 
-The module now writes the action-scoped keys used by the bundled Android 10 picker, retains older compatibility keys, refreshes the picker cache once on upgrade, and then force-stops DocumentsUI so the next picker launch reads the corrected state. In the default `EXTERNAL_ROOT_MODE=auto`, these keys are enabled only after both the live `primary:` root query and its child listing succeed.
+The **Root file system** entry has real root access. Do not change or delete files that you do not understand. Read-only system partitions remain read-only.
 
-## Repository layout
+## Technical information
 
-```text
-rootprovider/                   Android DocumentsProvider source
-module/                         Magisk module payload
-scripts/build-root-provider.py  Build and copy the signed provider APK
-scripts/release_version.py      Resolve, validate, and apply release versions
-scripts/release_assets.py       Validate the exact ZIP, checksum and update metadata
-scripts/validate-module.py      Validate APKs, scripts, paths, and module identity
-scripts/build-magisk-zip.py     Build the installable Magisk ZIP
-tests/                          Release-version and runtime-regression tests
-.github/workflows/ci.yml        Build and validate every change
-.github/workflows/release-magisk-module.yml
-```
-
-Repository agents must follow `AGENTS.md`. The repository-local orchestration skill is stored at `.agents/skills/github-engineering-orchestrator/SKILL.md`.
-
-## Local build
-
-Requires JDK 17, Android SDK 35, and Gradle 8.7+:
-
-```bash
-python3 -m unittest discover -s tests -p 'test_*.py' -v
-python3 scripts/build-root-provider.py --gradle gradle
-python3 scripts/validate-module.py --module-dir module
-python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist
-```
-
-The provider signing key is stored as a deterministic base64-encoded JKS so updates retain one signing identity. The decoded JKS and generated provider APK are ignored by Git.
-
-## Manual release workflow
-
-Run **Release Magisk module** from the default branch.
-
-- `version_tag`: enter `vMAJOR.MINOR.PATCH` or leave blank to increment the highest current/tagged patch version.
-- `version_code`: enter a positive integer or leave blank to increment the current `module.prop` code by one.
-- `draft` and `prerelease`: control the new GitHub release state.
-- `replace_existing_assets`: rebuilds only the exact existing tag and replaces its module ZIP, checksum, and `update.json`; it never moves a tag.
-
-For a new release, the workflow updates and commits `module/module.prop` before building, derives the Android provider version from that same file, validates all metadata, creates an annotated tag on the version commit, and then publishes the release. Default-branch freshness, tag/release collisions, monotonic version codes, APK metadata, STORE-only ZIP structure, checksums and `update.json` URLs are enforced before publishing.
-
-`scripts/make-update-json.py` is deliberately fail-closed: it refuses to write update metadata unless the source and embedded `module.prop`, canonical tag, deterministic ZIP name, required ZIP members, STORE-only archive, checksum filename and SHA-256 digest all agree.
-
-## Device validation status
-
-CI proves that the provider compiles, Android lint passes, APK/ZIP structures are valid, action-scoped DocumentsUI preference coverage is present, and module scripts pass syntax checks. The supplied TS18 diagnostics prove the stock provider exposes `primary:` and enumerates the top level of `/storage/emulated/0`, but physical picker acceptance still requires installing the release built from this change and selecting folders through real `OPEN_DOCUMENT`, `CREATE_DOCUMENT`, and `OPEN_DOCUMENT_TREE` client flows.
-
-This module does not flash boot, MCU, CAN, LCD, logo, or firmware partitions.
+Developers and advanced users should read the [technical and developer guide](docs/DEVELOPMENT.md).
