@@ -120,12 +120,6 @@ public final class RootDocumentsProvider extends DocumentsProvider {
         return queryChildDocumentsInternal(parentDocumentId, projection, null);
     }
 
-    @Override
-    public Cursor queryChildDocuments(String parentDocumentId, String[] projection, String sortOrder,
-                                      CancellationSignal signal) throws FileNotFoundException {
-        return queryChildDocumentsInternal(parentDocumentId, projection, signal);
-    }
-
     private Cursor queryChildDocumentsInternal(String parentDocumentId, String[] projection,
                                                 CancellationSignal signal) throws FileNotFoundException {
         MatrixCursor cursor = new MatrixCursor(resolveDocumentProjection(projection));
