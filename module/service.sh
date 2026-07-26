@@ -281,6 +281,14 @@ write_documentsui_prefs() {
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
     <boolean name="includeDeviceRoot" value="$value" />
+    <boolean name="includeDeviceRoot-1" value="$value" />
+    <boolean name="includeDeviceRoot-2" value="$value" />
+    <boolean name="includeDeviceRoot-3" value="$value" />
+    <boolean name="includeDeviceRoot-4" value="$value" />
+    <boolean name="includeDeviceRoot-5" value="$value" />
+    <boolean name="includeDeviceRoot-6" value="$value" />
+    <boolean name="includeDeviceRoot-7" value="$value" />
+    <boolean name="includeDeviceRoot-8" value="$value" />
     <boolean name="showAdvanced" value="$value" />
     <boolean name="advancedDevices" value="$value" />
     <boolean name="showDeviceStorageOption" value="$value" />
@@ -293,7 +301,7 @@ EOPREF
     chown "$uid:$uid" "$base/shared_prefs" 2>/dev/null || true
     restorecon -RF "$base" >/dev/null 2>&1 || true
   done
-  log "DocumentsUI internal roots visible=$show"
+  log "DocumentsUI action-scoped internal roots visible=$show"
 }
 
 refresh_picker_once() {
