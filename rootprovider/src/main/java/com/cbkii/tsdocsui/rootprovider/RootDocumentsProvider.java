@@ -18,8 +18,11 @@ import android.util.Log;
 import android.webkit.MimeTypeMap;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -288,8 +291,10 @@ public final class RootDocumentsProvider extends DocumentsProvider {
         }
 
         try {
-            RootEntry existing = RootShell.stat(sourcePath);
-            if (existing != null && shouldStageExistingContent(mode)) {
+            if (shouldStageExistingContent(mode)
+                    && !copyOutLocally(sourcePath, stage)) {
+                // RootShell.copyOut throws on denial, timeout, or copy failure. Failing the open
+                // prevents an empty stage from being served or copied back over existing data.
                 RootShell.copyOut(sourcePath, stage, android.os.Process.myUid());
             }
             if (signal != null) {
@@ -314,6 +319,26 @@ public final class RootDocumentsProvider extends DocumentsProvider {
             //noinspection ResultOfMethodCallIgnored
             stage.delete();
             throw fileNotFound("Open failed", e);
+        }
+    }
+
+    private static boolean copyOutLocally(String sourcePath, File destination) {
+        File source = new File(sourcePath);
+        if (!source.isFile() || !source.canRead()) {
+            return false;
+        }
+        try (InputStream input = new FileInputStream(source);
+             OutputStream output = new FileOutputStream(destination, false)) {
+            byte[] buffer = new byte[64 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                output.write(buffer, 0, count);
+            }
+            output.flush();
+            return true;
+        } catch (IOException | SecurityException failure) {
+            Log.d(TAG, "Direct stage initialisation unavailable for " + sourcePath, failure);
+            return false;
         }
     }
 
