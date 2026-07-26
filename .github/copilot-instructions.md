@@ -1,0 +1,1 @@
+Follow the repository-wide `AGENTS.md` and `.agents/skills/github-engineering-orchestrator/SKILL.md` before editing. Treat `module/module.prop` as the release version authority, validate the exact Magisk ZIP and release metadata, preserve the separate root-provider architecture, and never claim TS18 physical validation from CI alone.

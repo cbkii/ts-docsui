@@ -30,12 +30,15 @@ rootprovider/                   Android DocumentsProvider source
 module/                         Magisk module payload
 scripts/build-root-provider.py  Build and copy the signed provider APK
 scripts/release_version.py      Resolve, validate, and apply release versions
+scripts/release_assets.py       Validate the exact ZIP, checksum and update metadata
 scripts/validate-module.py      Validate APKs, scripts, paths, and module identity
 scripts/build-magisk-zip.py     Build the installable Magisk ZIP
-tests/                          Release-version resolver tests
+tests/                          Release-version and asset-integrity tests
 .github/workflows/ci.yml        Build and validate every change
 .github/workflows/release-magisk-module.yml
 ```
+
+Repository agents must follow `AGENTS.md`. The repository-local orchestration skill is stored at `.agents/skills/github-engineering-orchestrator/SKILL.md`.
 
 ## Local build
 
@@ -59,7 +62,9 @@ Run **Release Magisk module** from the default branch.
 - `draft` and `prerelease`: control the new GitHub release state.
 - `replace_existing_assets`: rebuilds only the exact existing tag and replaces its module ZIP, checksum, and `update.json`; it never moves a tag.
 
-For a new release, the workflow updates and commits `module/module.prop` before building, derives the Android provider version from that same file, validates all metadata, creates an annotated tag on the version commit, and then publishes the release. Default-branch freshness, tag/release collisions, monotonic version codes, APK metadata, STORE-only ZIP structure, and checksums are all enforced before publishing.
+For a new release, the workflow updates and commits `module/module.prop` before building, derives the Android provider version from that same file, validates all metadata, creates an annotated tag on the version commit, and then publishes the release. Default-branch freshness, tag/release collisions, monotonic version codes, APK metadata, STORE-only ZIP structure, checksums and `update.json` URLs are enforced before publishing.
+
+`scripts/make-update-json.py` is deliberately fail-closed: it refuses to write update metadata unless the source and embedded `module.prop`, canonical tag, deterministic ZIP name, required ZIP members, STORE-only archive, checksum filename and SHA-256 digest all agree.
 
 ## Device validation status
 

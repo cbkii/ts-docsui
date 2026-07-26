@@ -5,8 +5,10 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -40,28 +42,42 @@ def parse_semver(value: str, *, field: str = "version") -> SemVer:
     return SemVer(*(int(part, 10) for part in match.groups()))
 
 
-def parse_properties(path: Path) -> dict[str, str]:
+def parse_properties_text(text: str, *, source: str = "properties") -> dict[str, str]:
     props: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8", errors="strict").splitlines():
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
-            raise ValueError(f"Malformed property line in {path}: {raw!r}")
+            raise ValueError(f"Malformed property line in {source}: {raw!r}")
         key, value = line.split("=", 1)
-        props[key.strip()] = value.strip()
+        key = key.strip()
+        if key in props:
+            raise ValueError(f"Duplicate property {key!r} in {source}")
+        props[key] = value.strip()
     return props
 
 
-def list_git_tags(repo_root: Path) -> list[str]:
-    completed = subprocess.run(
-        ["git", "tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"],
-        cwd=repo_root,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+def parse_properties(path: Path) -> dict[str, str]:
+    return parse_properties_text(
+        path.read_text(encoding="utf-8", errors="strict"), source=str(path)
     )
+
+
+def list_git_tags(repo_root: Path) -> list[str]:
+    try:
+        completed = subprocess.run(
+            ["git", "tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"],
+            cwd=repo_root,
+            check=False,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("git tag exceeded 30 seconds") from exc
     if completed.returncode != 0:
         raise RuntimeError(f"git tag failed: {completed.stderr.strip()}")
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
@@ -127,6 +143,17 @@ def resolve_release(
     if target_code < 1:
         raise ValueError("resolved versionCode must be positive")
 
+    if not allow_lower_version:
+        if target > current and target_code <= current_code:
+            raise ValueError(
+                f"a newer release requires versionCode greater than {current_code}; "
+                f"resolved {target_code}"
+            )
+        if target == current and target_code < current_code:
+            raise ValueError(
+                f"version {target.tag} cannot reduce versionCode {current_code} to {target_code}"
+            )
+
     previous = max((version for version in known if version < target), default=None)
     return {
         "release_tag": target.tag,
@@ -152,11 +179,26 @@ def replace_property(text: str, key: str, value: str) -> str:
     return updated
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    mode = stat.S_IMODE(path.stat().st_mode)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, mode)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
 def apply_release(module_prop: Path, release_tag: str, release_version_code: str) -> None:
     text = module_prop.read_text(encoding="utf-8", errors="strict")
     text = replace_property(text, "version", release_tag)
     text = replace_property(text, "versionCode", release_version_code)
-    module_prop.write_text(text.rstrip("\n") + "\n", encoding="utf-8", newline="\n")
+    atomic_write_text(module_prop, text.rstrip("\n") + "\n")
 
 
 def append_github_output(path: Path, values: dict[str, object]) -> None:
