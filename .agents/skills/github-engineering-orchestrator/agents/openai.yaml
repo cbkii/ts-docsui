@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Engineering Orchestrator"
+  short_description: "Complete GitHub engineering, PR, CI, release, connector, orchestration, and Termux workflows."
+  default_prompt: "Use $github-engineering-orchestrator to inspect the exact repository state and complete the requested GitHub engineering work through its authorised end state."
