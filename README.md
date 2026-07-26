@@ -23,6 +23,12 @@ Client app
 
 The stock ExternalStorageProvider is retained rather than replaced. Current TS18 diagnostics prove that its `primary:` root and `primary:/children` query successfully enumerate `/storage/emulated/0`; previous module releases hid that working root through DocumentsUI preferences. The root provider is a separate package and authority, so it cannot collide with the stock provider.
 
+## Action-scoped internal-storage fix
+
+Android 10 DocumentsUI does not read one global `includeDeviceRoot` preference for every picker flow. It reads an action-scoped key such as `includeDeviceRoot-3` for `OPEN_DOCUMENT` or `includeDeviceRoot-6` for `OPEN_DOCUMENT_TREE`. Earlier module code wrote only the unsuffixed key, so the provider could successfully return `primary:` and every top-level folder while the visible picker still filtered the root out.
+
+The module now writes the action-scoped keys used by the bundled Android 10 picker, retains older compatibility keys, refreshes the picker cache once on upgrade, and then force-stops DocumentsUI so the next picker launch reads the corrected state. In the default `EXTERNAL_ROOT_MODE=auto`, these keys are enabled only after both the live `primary:` root query and its child listing succeed.
+
 ## Repository layout
 
 ```text
@@ -33,7 +39,7 @@ scripts/release_version.py      Resolve, validate, and apply release versions
 scripts/release_assets.py       Validate the exact ZIP, checksum and update metadata
 scripts/validate-module.py      Validate APKs, scripts, paths, and module identity
 scripts/build-magisk-zip.py     Build the installable Magisk ZIP
-tests/                          Release-version and asset-integrity tests
+tests/                          Release-version and runtime-regression tests
 .github/workflows/ci.yml        Build and validate every change
 .github/workflows/release-magisk-module.yml
 ```
@@ -68,6 +74,6 @@ For a new release, the workflow updates and commits `module/module.prop` before 
 
 ## Device validation status
 
-CI proves that the provider compiles, Android lint passes, APK/ZIP structures are valid, and module scripts pass syntax checks. Physical TS18 validation is still required after installation; use the Magisk Action collector if any provider root fails.
+CI proves that the provider compiles, Android lint passes, APK/ZIP structures are valid, action-scoped DocumentsUI preference coverage is present, and module scripts pass syntax checks. The supplied TS18 diagnostics prove the stock provider exposes `primary:` and enumerates the top level of `/storage/emulated/0`, but physical picker acceptance still requires installing the release built from this change and selecting folders through real `OPEN_DOCUMENT`, `CREATE_DOCUMENT`, and `OPEN_DOCUMENT_TREE` client flows.
 
 This module does not flash boot, MCU, CAN, LCD, logo, or firmware partitions.
