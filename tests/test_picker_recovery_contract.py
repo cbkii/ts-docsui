@@ -61,6 +61,20 @@ class PickerRecoveryContractTests(unittest.TestCase):
         self.assertIn('run(LIST_TIMEOUT_SECONDS, "list", path)', source)
         self.assertRegex(source, r"LIST_TIMEOUT_SECONDS\s*=\s*8L")
 
+    def test_non_truncating_stage_initialisation_fails_closed(self) -> None:
+        source = self.read(
+            "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootDocumentsProvider.java"
+        )
+        body = self.method_body(source, "private ParcelFileDescriptor openStaged(")
+        self.assertIn("!copyOutLocally(sourcePath, stage)", body)
+        self.assertIn("RootShell.copyOut(sourcePath, stage", body)
+        self.assertNotIn("RootShell.stat(sourcePath)", body)
+        self.assertLess(
+            body.index("!copyOutLocally(sourcePath, stage)"),
+            body.index("RootShell.copyOut(sourcePath, stage"),
+        )
+        self.assertIn('throw fileNotFound("Open failed", e)', body)
+
     def test_service_repairs_known_v101_launch_breakages(self) -> None:
         service = self.read("module/service.sh")
         required = (
@@ -84,6 +98,17 @@ class PickerRecoveryContractTests(unittest.TestCase):
         self.assertIn("rc=$?", body)
         self.assertIn('if [ "$rc" -eq 0 ]', body)
         self.assertIn("ERROR: failed to enable component", body)
+
+    def test_service_logs_best_effort_repairs_and_hardens_rm(self) -> None:
+        service = self.read("module/service.sh")
+        load_config = self.method_body(service, "load_config()")
+        enable_pkg = self.method_body(service, "enable_pkg()")
+        refresh = self.method_body(service, "refresh_picker_once()")
+        self.assertNotIn('chmod 0644 "$CFG" 2>/dev/null || true', load_config)
+        self.assertIn("runtime config created but chmod 0644 was rejected", load_config)
+        self.assertIn("install-existing not applied", enable_pkg)
+        self.assertNotIn("install-existing --user", enable_pkg.split("if !", 1)[0])
+        self.assertIn('rm -f -- "$base"/databases/roots.db*', refresh)
 
     def test_default_config_forces_proven_primary_root_visible(self) -> None:
         config = self.read("module/config.default")
