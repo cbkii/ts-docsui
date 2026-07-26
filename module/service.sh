@@ -61,6 +61,7 @@ if [ -f "$LOG" ]; then
   size=$(wc -c < "$LOG" 2>/dev/null || echo 0)
   case "$size" in ''|*[!0-9]*) size=0 ;; esac
   if [ "$size" -gt 524288 ]; then
+    # Best-effort history only; failure is safe because the current log remains usable.
     mv -f "$LOG" "$LOG.previous" 2>/dev/null || true
   fi
 fi
@@ -87,7 +88,9 @@ valid_value() {
 load_config() {
   if [ ! -f "$CFG" ] && [ -f "$MODDIR/config.default" ]; then
     if cp -f "$MODDIR/config.default" "$CFG" 2>/dev/null; then
-      chmod 0644 "$CFG" 2>/dev/null || true
+      if ! chmod 0644 "$CFG" 2>/dev/null; then
+        log "WARN: runtime config created but chmod 0644 was rejected"
+      fi
       log "created runtime config from module defaults"
     else
       log "WARN: could not create runtime config"
@@ -119,7 +122,9 @@ pkg_uid() {
 enable_pkg() {
   package=$1
   pkg_exists "$package" || { log "ERROR: package absent: $package"; return 1; }
-  pm install-existing --user "$TARGET_USER" "$package" >> "$LOG" 2>&1 || true
+  if ! pm install-existing --user "$TARGET_USER" "$package" >> "$LOG" 2>&1; then
+    log "install-existing not applied for $package; enable will verify the usable package state"
+  fi
   output=$(pm enable --user "$TARGET_USER" "$package" 2>&1)
   rc=$?
   echo "$output" >> "$LOG"
@@ -473,7 +478,7 @@ refresh_picker_once() {
 
   for base in "/data/user/$TARGET_USER/com.android.documentsui" "/data/data/com.android.documentsui"; do
     [ -d "$base" ] || continue
-    if ! rm -f "$base"/databases/roots.db* "$base"/databases/lastAccess.db* \
+    if ! rm -f -- "$base"/databases/roots.db* "$base"/databases/lastAccess.db* \
       "$base"/databases/lastAccessed.db* "$base"/databases/pickCount.db* >> "$LOG" 2>&1; then
       log "WARN: optional DocumentsUI root-cache database cleanup failed: $base"
     fi
