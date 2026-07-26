@@ -207,8 +207,12 @@ set_appop() {
 find_timeout() {
   if [ -x /data/adb/magisk/busybox ]; then
     echo "/data/adb/magisk/busybox timeout"
+  elif [ -x /system/bin/toybox ]; then
+    echo "/system/bin/toybox timeout"
   elif command -v timeout >/dev/null 2>&1; then
     echo timeout
+  elif command -v toybox >/dev/null 2>&1; then
+    echo "toybox timeout"
   elif command -v busybox >/dev/null 2>&1; then
     echo "busybox timeout"
   else
@@ -217,14 +221,16 @@ find_timeout() {
 }
 
 TIMEOUT_CMD=$(find_timeout)
+BOUNDED_COMMAND_SKIPPED=125
 run_bounded_sh() {
   seconds=$1
   shift
   command_text=$*
   if [ -z "$TIMEOUT_CMD" ]; then
-    log "WARN: timeout unavailable; skipped bounded command: $command_text"
-    return 124
+    log "WARN: bounded command skipped because no timeout implementation exists: $command_text"
+    return "$BOUNDED_COMMAND_SKIPPED"
   fi
+  # TIMEOUT_CMD intentionally contains one executable and its timeout applet name.
   # shellcheck disable=SC2086
   $TIMEOUT_CMD "$seconds" sh -c "$command_text"
 }
@@ -245,7 +251,10 @@ repair_package_data_owner() {
     else
       log "WARN: owner repair failed: $base uid=$uid"
     fi
-    restorecon -RF "$base" >> "$LOG" 2>&1 || true
+    if ! restorecon -RF "$base" >> "$LOG" 2>&1; then
+      # Ownership is required; restorecon is best-effort on this exact SELinux-permissive TS18.
+      log "WARN: restorecon failed after owner repair: $base"
+    fi
   done
   log "package data ownership checked: $package uid=$uid paths=$repaired"
   return 0
@@ -253,8 +262,12 @@ repair_package_data_owner() {
 
 cleanup_stale_provider() {
   pkg_exists "$STALE_PROVIDER_PKG" || { log "stale provider absent: $STALE_PROVIDER_PKG"; return 0; }
-  disable_component "$STALE_PROVIDER_PKG/.TS18DocumentsProvider" || true
-  disable_pkg "$STALE_PROVIDER_PKG" || true
+  if ! disable_component "$STALE_PROVIDER_PKG/.TS18DocumentsProvider"; then
+    log "WARN: stale provider component could not be disabled; package-level disable will still be attempted"
+  fi
+  if ! disable_pkg "$STALE_PROVIDER_PKG"; then
+    log "WARN: stale provider package could not be disabled; per-user uninstall will still be attempted"
+  fi
   if is_on "$FIX_UNINSTALL_STALE_TS18_PROVIDER_FOR_USER"; then
     output=$(pm uninstall --user "$TARGET_USER" "$STALE_PROVIDER_PKG" 2>&1)
     rc=$?
@@ -292,8 +305,12 @@ prepare_stage_dir() {
       ;;
   esac
   mkdir -p "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1 || return 1
-  chmod 0777 "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1 || true
-  find "$ROOT_PROVIDER_STAGE_DIR" -maxdepth 1 -type f -name 'root-*.stage' -mmin +60 -delete >> "$LOG" 2>&1 || true
+  if ! chmod 0777 "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1; then
+    log "WARN: staging chmod was rejected; shared-storage mediation may still provide access"
+  fi
+  if ! find "$ROOT_PROVIDER_STAGE_DIR" -maxdepth 1 -type f -name 'root-*.stage' -mmin +60 -delete >> "$LOG" 2>&1; then
+    log "WARN: stale staging cleanup failed; current picker launch remains valid"
+  fi
   log "root provider staging directory ready: $ROOT_PROVIDER_STAGE_DIR"
 }
 
@@ -318,9 +335,16 @@ write_root_provider_prefs() {
     <long name="stageLimitBytes" value="$ROOT_PROVIDER_STAGE_LIMIT_BYTES" />
 </map>
 EOPREF
-  chown -R "$uid:$uid" "$base" 2>/dev/null || true
-  chmod 0600 "$prefs_file" 2>/dev/null || true
-  restorecon -RF "$base" >/dev/null 2>&1 || true
+  if ! chown -R "$uid:$uid" "$base" >> "$LOG" 2>&1; then
+    log "WARN: root-provider preference ownership repair failed uid=$uid"
+  fi
+  if ! chmod 0600 "$prefs_file" >> "$LOG" 2>&1; then
+    log "WARN: root-provider preference mode repair failed"
+  fi
+  if ! restorecon -RF "$base" >> "$LOG" 2>&1; then
+    # Best-effort on this exact SELinux-permissive TS18; ownership/mode are authoritative here.
+    log "WARN: root-provider preference restorecon failed"
+  fi
   log "wrote root provider preferences uid=$uid"
 }
 
@@ -355,25 +379,36 @@ install_helper() {
   [ -f "$HELPER_SRC" ] || { log "ERROR: root helper source missing: $HELPER_SRC"; return 1; }
   mkdir -p "$STATE_DIR" 2>/dev/null || return 1
   cp -f "$HELPER_SRC" "$HELPER_DST" >> "$LOG" 2>&1 || return 1
-  chown 0:0 "$HELPER_DST" 2>/dev/null || true
-  chmod 0755 "$HELPER_DST" 2>/dev/null || true
-  restorecon "$HELPER_DST" >/dev/null 2>&1 || true
+  if ! chown 0:0 "$HELPER_DST" >> "$LOG" 2>&1; then
+    log "WARN: helper ownership repair failed"
+  fi
+  if ! chmod 0755 "$HELPER_DST" >> "$LOG" 2>&1; then
+    log "ERROR: helper executable mode could not be set"
+    return 1
+  fi
+  if ! restorecon "$HELPER_DST" >> "$LOG" 2>&1; then
+    # Best-effort on this exact SELinux-permissive TS18; executable mode is required.
+    log "WARN: helper restorecon failed"
+  fi
   log "installed root helper: $HELPER_DST"
   return 0
 }
 
 external_provider_healthy() {
+  # Return 0=healthy, 1=definitively unavailable, 2=inconclusive/transient.
   pkg_exists com.android.externalstorage || return 1
   roots=$(run_bounded_sh 8 "content query --uri content://com.android.externalstorage.documents/root --user '$TARGET_USER'" 2>&1)
   rc=$?
   echo "$roots" >> "$LOG"
-  [ "$rc" -eq 0 ] || return 1
+  [ "$rc" -eq "$BOUNDED_COMMAND_SKIPPED" ] && return 2
+  [ "$rc" -eq 0 ] || return 2
   echo "$roots" | grep -q 'root_id=primary' || return 1
   children=$(run_bounded_sh 10 "content query --uri content://com.android.externalstorage.documents/document/primary%3A/children --user '$TARGET_USER'" 2>&1)
   rc=$?
   echo "$children" >> "$LOG"
-  [ "$rc" -eq 0 ] || return 1
-  echo "$children" | grep -q 'document_id=primary:' || return 1
+  [ "$rc" -eq "$BOUNDED_COMMAND_SKIPPED" ] && return 2
+  [ "$rc" -eq 0 ] || return 2
+  # An empty primary directory is still a valid provider result.
   return 0
 }
 
@@ -396,11 +431,23 @@ write_documentsui_prefs() {
     <boolean name="fileSize" value="true" />
 </map>
 EOPREF
-      chown "$uid:$uid" "$file" 2>/dev/null || true
-      chmod 0600 "$file" 2>/dev/null || true
+      if ! chown "$uid:$uid" "$file" >> "$LOG" 2>&1; then
+        log "ERROR: DocumentsUI preference ownership failed: $file uid=$uid"
+        return 1
+      fi
+      if ! chmod 0600 "$file" >> "$LOG" 2>&1; then
+        log "ERROR: DocumentsUI preference mode failed: $file"
+        return 1
+      fi
     done
-    chown -R "$uid:$uid" "$base/shared_prefs" 2>/dev/null || true
-    restorecon -RF "$base" >/dev/null 2>&1 || true
+    if ! chown -R "$uid:$uid" "$base/shared_prefs" >> "$LOG" 2>&1; then
+      log "ERROR: DocumentsUI shared_prefs ownership failed: $base"
+      return 1
+    fi
+    if ! restorecon -RF "$base" >> "$LOG" 2>&1; then
+      # Best-effort on this exact SELinux-permissive TS18; package UID ownership is required.
+      log "WARN: DocumentsUI restorecon failed: $base"
+    fi
   done
   log "DocumentsUI internal roots visible=$show uid=$uid"
 }
@@ -411,18 +458,30 @@ refresh_picker_once() {
   config_hash=$(sha256sum "$CFG" 2>/dev/null | awk '{print $1}')
   [ -n "$config_hash" ] || config_hash=unknown
   desired="v1.0.1:$show:$config_hash"
-  current=$(cat "$STATE_DIR/applied-state" 2>/dev/null || true)
+  # Missing state is expected on first install; unreadable state simply forces one safe refresh.
+  current=$(cat "$STATE_DIR/applied-state" 2>/dev/null)
+  [ -n "$current" ] || current=""
   [ "$current" = "$desired" ] && { log "picker state already current"; return 0; }
 
   for base in "/data/user/$TARGET_USER/com.android.documentsui" "/data/data/com.android.documentsui"; do
     [ -d "$base" ] || continue
-    rm -f "$base"/databases/roots.db* "$base"/databases/lastAccess.db* \
-      "$base"/databases/lastAccessed.db* "$base"/databases/pickCount.db* 2>/dev/null || true
-    find "$base/cache" -maxdepth 1 -type f -name '*root*' -delete 2>/dev/null || true
+    if ! rm -f "$base"/databases/roots.db* "$base"/databases/lastAccess.db* \
+      "$base"/databases/lastAccessed.db* "$base"/databases/pickCount.db* >> "$LOG" 2>&1; then
+      log "WARN: optional DocumentsUI root-cache database cleanup failed: $base"
+    fi
+    if [ -d "$base/cache" ] && ! find "$base/cache" -maxdepth 1 -type f -name '*root*' -delete >> "$LOG" 2>&1; then
+      log "WARN: optional DocumentsUI root-cache file cleanup failed: $base/cache"
+    fi
   done
-  am force-stop com.android.documentsui >> "$LOG" 2>&1 || true
-  am force-stop "$ROOT_PKG" >> "$LOG" 2>&1 || true
-  echo "$desired" > "$STATE_DIR/applied-state" 2>/dev/null || true
+  if ! am force-stop com.android.documentsui >> "$LOG" 2>&1; then
+    log "WARN: DocumentsUI was not running or could not be force-stopped; cache files were already refreshed"
+  fi
+  if ! am force-stop "$ROOT_PKG" >> "$LOG" 2>&1; then
+    log "WARN: root provider was not running or could not be force-stopped"
+  fi
+  if ! echo "$desired" > "$STATE_DIR/applied-state" 2>/dev/null; then
+    log "WARN: applied-state marker could not be written; next boot will repeat the safe refresh"
+  fi
   log "picker cache refreshed for new module/config state"
 }
 
@@ -450,30 +509,57 @@ resolve_picker_action() {
   esac
   output=$(run_bounded_sh 6 "$query" 2>&1)
   rc=$?
+  if [ "$rc" -eq "$BOUNDED_COMMAND_SKIPPED" ]; then
+    echo "resolve $action skipped: $output" >> "$LOG"
+    return 2
+  fi
   if [ "$rc" -ne 0 ] || [ -z "$output" ]; then
     output=$(run_bounded_sh 6 "$fallback" 2>&1)
     rc=$?
+  fi
+  if [ "$rc" -eq "$BOUNDED_COMMAND_SKIPPED" ]; then
+    echo "resolve $action fallback skipped: $output" >> "$LOG"
+    return 2
   fi
   echo "resolve $action rc=$rc: $output" >> "$LOG"
   [ "$rc" -eq 0 ] && echo "$output" | grep -q 'com.android.documentsui/'
 }
 
+write_resolver_state() {
+  state=$1
+  if ! echo "$state $(date '+%F %T %z' 2>/dev/null || echo unknown)" > "$STATE_DIR/picker-resolver-state" 2>/dev/null; then
+    log "WARN: picker resolver state marker could not be written"
+  fi
+}
+
 verify_picker_resolver() {
   failed=0
+  skipped=0
   for action in android.intent.action.OPEN_DOCUMENT_TREE android.intent.action.OPEN_DOCUMENT android.intent.action.GET_CONTENT; do
-    if resolve_picker_action "$action"; then
-      log "picker resolver OK: $action"
-    else
-      log "ERROR: picker resolver is not DocumentsUI: $action"
-      failed=$((failed + 1))
-    fi
+    resolve_picker_action "$action"
+    rc=$?
+    case "$rc" in
+      0) log "picker resolver OK: $action" ;;
+      2)
+        log "WARN: picker resolver verification skipped because no bounded runner exists: $action"
+        skipped=$((skipped + 1))
+        ;;
+      *)
+        log "ERROR: picker resolver is not DocumentsUI: $action"
+        failed=$((failed + 1))
+        ;;
+    esac
   done
-  if [ "$failed" -eq 0 ]; then
-    echo "healthy $(date '+%F %T %z' 2>/dev/null || echo unknown)" > "$STATE_DIR/picker-resolver-state" 2>/dev/null || true
+  if [ "$failed" -gt 0 ]; then
+    write_resolver_state "failed=$failed skipped=$skipped"
+    return 1
+  fi
+  if [ "$skipped" -gt 0 ]; then
+    write_resolver_state "inconclusive skipped=$skipped"
     return 0
   fi
-  echo "failed=$failed $(date '+%F %T %z' 2>/dev/null || echo unknown)" > "$STATE_DIR/picker-resolver-state" 2>/dev/null || true
-  return 1
+  write_resolver_state "healthy"
+  return 0
 }
 
 load_config
@@ -500,8 +586,12 @@ if is_on "$FIX_DISABLE_STALE_TS18_PROVIDER"; then
 fi
 
 if is_on "$FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR"; then
-  disable_component "$APP_MANAGER_PKG/.intercept.ActivityInterceptor" || true
-  disable_component "$APP_MANAGER_PKG/io.github.muntashirakon.AppManager.intercept.ActivityInterceptor" || true
+  if ! disable_component "$APP_MANAGER_PKG/.intercept.ActivityInterceptor"; then
+    log "WARN: short App Manager interceptor component was not present or could not be disabled"
+  fi
+  if ! disable_component "$APP_MANAGER_PKG/io.github.muntashirakon.AppManager.intercept.ActivityInterceptor"; then
+    log "WARN: fully-qualified App Manager interceptor component was not present or could not be disabled"
+  fi
 fi
 if is_on "$FIX_CLEAR_PICKER_PREFERRED_ACTIVITIES"; then
   clear_picker_preferred_activities "$APP_MANAGER_PKG"
@@ -512,49 +602,84 @@ if is_on "$FIX_ENABLE_AOSP_DOCUMENTSUI"; then
   enable_pkg com.android.documentsui || log "ERROR: DocumentsUI package could not be enabled"
 fi
 if is_on "$FIX_ENABLE_DOCUMENTSUI_COMPONENTS"; then
-  enable_component com.android.documentsui/.picker.PickActivity || true
-  enable_component com.android.documentsui/.files.FilesActivity || true
-  enable_component com.android.documentsui/.files.LauncherActivity || true
-  enable_component com.android.documentsui/.LauncherActivity || true
-  enable_component com.android.documentsui/.ViewDownloadsActivity || true
-  enable_component com.android.documentsui/.ScopedAccessActivity || true
+  for component in \
+    com.android.documentsui/.picker.PickActivity \
+    com.android.documentsui/.files.FilesActivity \
+    com.android.documentsui/.files.LauncherActivity \
+    com.android.documentsui/.LauncherActivity \
+    com.android.documentsui/.ViewDownloadsActivity \
+    com.android.documentsui/.ScopedAccessActivity; do
+    if ! enable_component "$component"; then
+      log "ERROR: DocumentsUI entrypoint could not be enabled: $component"
+    fi
+  done
 fi
 if is_on "$FIX_DISABLE_GOOGLE_DOCUMENTSUI"; then
-  disable_pkg com.google.android.documentsui || true
+  if ! disable_pkg com.google.android.documentsui; then
+    log "WARN: competing Google DocumentsUI package could not be disabled"
+  fi
 fi
 
 if is_on "$FIX_ENABLE_EXTERNAL_STORAGE_PROVIDER"; then
-  enable_pkg com.android.externalstorage || true
-  enable_component com.android.externalstorage/.ExternalStorageProvider || true
-  enable_component com.android.externalstorage/.MountReceiver || true
+  if ! enable_pkg com.android.externalstorage; then
+    log "ERROR: stock ExternalStorageProvider package could not be enabled"
+  fi
+  if ! enable_component com.android.externalstorage/.ExternalStorageProvider; then
+    log "ERROR: stock ExternalStorageProvider component could not be enabled"
+  fi
+  if ! enable_component com.android.externalstorage/.MountReceiver; then
+    log "WARN: ExternalStorageProvider mount receiver could not be enabled"
+  fi
 fi
 if is_on "$FIX_DISABLE_EXTERNAL_STORAGE_TEST_PROVIDER"; then
-  disable_component com.android.externalstorage/.TestDocumentsProvider || true
+  if ! disable_component com.android.externalstorage/.TestDocumentsProvider; then
+    log "WARN: optional ExternalStorageProvider test component could not be disabled"
+  fi
 fi
 
 if is_on "$FIX_REPAIR_DOCUMENTSUI_DATA_OWNER"; then
-  repair_package_data_owner com.android.documentsui || true
+  if ! repair_package_data_owner com.android.documentsui; then
+    log "ERROR: DocumentsUI private-data ownership repair failed"
+  fi
 fi
 
 if is_on "$FIX_ENABLE_ROOT_FILE_PROVIDER"; then
   if install_helper; then
-    enable_pkg "$ROOT_PKG" || true
-    prepare_stage_dir || log "WARN: root provider staging directory unavailable"
-    auto_grant_root || true
-    write_root_provider_prefs || true
-    enable_component "$ROOT_COMPONENT" || log "WARN: root provider component unavailable; stock picker remains enabled"
+    if ! enable_pkg "$ROOT_PKG"; then
+      log "WARN: root provider package unavailable; stock picker remains enabled"
+    fi
+    if ! prepare_stage_dir; then
+      log "WARN: root provider staging directory unavailable; stock picker remains enabled"
+    fi
+    if ! auto_grant_root; then
+      log "WARN: root provider may request Magisk permission when root-only content is opened"
+    fi
+    if ! write_root_provider_prefs; then
+      log "WARN: root provider preferences could not be written; built-in safe defaults remain"
+    fi
+    if ! enable_component "$ROOT_COMPONENT"; then
+      log "WARN: root provider component unavailable; stock picker remains enabled"
+    fi
   else
-    disable_component "$ROOT_COMPONENT" || true
+    if ! disable_component "$ROOT_COMPONENT"; then
+      log "WARN: failed root-provider component could not be disabled"
+    fi
     log "WARN: root provider disabled because helper installation failed; stock picker remains enabled"
   fi
 else
-  disable_component "$ROOT_COMPONENT" || true
+  if ! disable_component "$ROOT_COMPONENT"; then
+    log "WARN: root-provider component could not be disabled by configuration"
+  fi
 fi
 
 MIXPLORER_PKG=$(find_mixplorer_package)
 if is_on "$FIX_ENABLE_MIXPLORER_PROVIDER" && [ -n "$MIXPLORER_PKG" ]; then
-  enable_pkg "$MIXPLORER_PKG" || true
-  enable_component "$MIXPLORER_PKG/com.mixplorer.providers.DocProvider" || true
+  if ! enable_pkg "$MIXPLORER_PKG"; then
+    log "WARN: optional MiXplorer package could not be enabled"
+  fi
+  if ! enable_component "$MIXPLORER_PKG/com.mixplorer.providers.DocProvider"; then
+    log "WARN: optional MiXplorer DocumentsProvider could not be enabled"
+  fi
 fi
 
 if is_on "$FIX_GRANT_STORAGE_ACCESS"; then
@@ -576,7 +701,9 @@ fi
 
 if is_on "$FIX_CREATE_STANDARD_INTERNAL_DIRS"; then
   for directory in Download Documents Music Movies Pictures DCIM Alarms Audiobooks Notifications Podcasts Ringtones; do
-    mkdir -p "/storage/emulated/0/$directory" >> "$LOG" 2>&1 || true
+    if ! mkdir -p "/storage/emulated/0/$directory" >> "$LOG" 2>&1; then
+      log "WARN: optional standard shared-storage directory could not be created: $directory"
+    fi
   done
 fi
 
@@ -585,37 +712,62 @@ case "$EXTERNAL_ROOT_MODE" in
   show) external_show=1 ;;
   hide) external_show=0 ;;
   auto)
-    if external_provider_healthy; then
-      external_show=1
-      log "external primary root and child listing passed"
-    else
-      external_show=0
-      log "WARN: external primary root test failed in auto mode; root provider remains available"
-    fi
+    external_provider_healthy
+    health_rc=$?
+    case "$health_rc" in
+      0)
+        external_show=1
+        log "external primary root and child listing passed"
+        ;;
+      1)
+        external_show=0
+        log "WARN: external primary root is definitively unavailable in auto mode"
+        ;;
+      *)
+        # Missing timeout or transient provider failure is inconclusive, not proof that
+        # exact-device-proven primary storage should be hidden.
+        external_show=1
+        log "WARN: external primary root test was inconclusive in auto mode; kept primary visible"
+        ;;
+    esac
     ;;
   *)
     external_show=1
     log "WARN: unknown EXTERNAL_ROOT_MODE=$EXTERNAL_ROOT_MODE; defaulted to show"
     ;;
 esac
-write_documentsui_prefs "$external_show" || true
+if ! write_documentsui_prefs "$external_show"; then
+  log "ERROR: DocumentsUI advanced-root preferences could not be repaired"
+fi
 if is_on "$FIX_REPAIR_DOCUMENTSUI_DATA_OWNER"; then
-  repair_package_data_owner com.android.documentsui || true
+  if ! repair_package_data_owner com.android.documentsui; then
+    log "ERROR: final DocumentsUI private-data ownership repair failed"
+  fi
 fi
 refresh_picker_once "$external_show"
 
 if is_on "$FIX_WARM_UP_PROVIDERS"; then
-  run_bounded_sh 8 "content query --uri content://com.android.providers.downloads.documents/root --user '$TARGET_USER'" >> "$LOG" 2>&1 || true
-  run_bounded_sh 8 "content query --uri content://com.android.externalstorage.documents/root --user '$TARGET_USER'" >> "$LOG" 2>&1 || true
-  run_bounded_sh 8 "content query --uri content://$ROOT_AUTH/root --user '$TARGET_USER'" >> "$LOG" 2>&1 || true
+  for warmup_uri in \
+    content://com.android.providers.downloads.documents/root \
+    content://com.android.externalstorage.documents/root \
+    content://$ROOT_AUTH/root; do
+    if ! run_bounded_sh 8 "content query --uri '$warmup_uri' --user '$TARGET_USER'" >> "$LOG" 2>&1; then
+      log "WARN: optional provider warm-up did not complete: $warmup_uri"
+    fi
+  done
 fi
 
 if is_on "$FIX_VERIFY_PICKER_RESOLVER"; then
-  verify_picker_resolver || log "ERROR: one or more picker actions still resolve away from DocumentsUI"
+  if ! verify_picker_resolver; then
+    log "ERROR: one or more picker actions still resolve away from DocumentsUI"
+  fi
 fi
 
 if is_on "$DIAG_AUTO_RUN_ON_BOOT" && [ -x "$MODDIR/tools/ts18-saf-deepdiag.sh" ]; then
-  sh "$MODDIR/tools/ts18-saf-deepdiag.sh" boot >> "$LOG" 2>&1 || true
+  if ! sh "$MODDIR/tools/ts18-saf-deepdiag.sh" boot >> "$LOG" 2>&1; then
+    # Diagnostics are optional evidence collection and must not invalidate picker repair.
+    log "WARN: optional boot diagnostics failed"
+  fi
 fi
 
 log "service complete"
