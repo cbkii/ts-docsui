@@ -16,7 +16,7 @@ This Magisk module repairs the Android 10 system file picker on TS18-class head 
 
 The normal Android ExternalStorageProvider remains the preferred provider for `/storage/emulated/0` because it offers native seekable file descriptors and Android-compatible URI behaviour. The bundled root provider is an additional provider for root-only paths and a fallback internal-storage root.
 
-Android 10 stores the advanced-device choice separately for each picker action. v1.2 writes `includeDeviceRoot-1` through `includeDeviceRoot-8` as well as older compatibility keys. This is what makes the proven-working `primary:` root visible to file-open, file-create, content, tree, browse, and copy-destination flows instead of leaving only Downloads visible.
+Android 10 stores the advanced-device choice separately for each picker action. The module writes `includeDeviceRoot-1` through `includeDeviceRoot-8` as well as older compatibility keys. This makes the proven-working `primary:` root visible to file-open, file-create, content, tree, browse, and copy-destination flows instead of leaving only Downloads visible.
 
 The root provider uses Magisk `su`. The module normally creates an allow policy for its package automatically. When automatic policy creation is unavailable, Magisk may show one root request.
 
