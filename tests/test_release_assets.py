@@ -100,6 +100,34 @@ class ReleaseAssetTests(unittest.TestCase):
                     checksum_path=checksum_path,
                 )
 
+    def test_zip64_local_header_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            module_dir, zip_path, checksum_path = self.make_fixture(root)
+            module_prop = (module_dir / "module.prop").read_bytes()
+            with zipfile.ZipFile(
+                zip_path,
+                "w",
+                compression=zipfile.ZIP_STORED,
+                allowZip64=True,
+            ) as archive:
+                with archive.open("module.prop", "w", force_zip64=True) as handle:
+                    handle.write(module_prop)
+                for name in sorted(REQUIRED_ZIP_ENTRIES - {"module.prop"}):
+                    archive.writestr(name, b"fixture")
+            digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+            checksum_path.write_text(
+                f"{digest}  {zip_path.name}\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "ZIP64"):
+                validate_release_assets(
+                    module_dir=module_dir,
+                    repository="cbkii/ts-docsui",
+                    tag="v1.2.3",
+                    zip_path=zip_path,
+                    checksum_path=checksum_path,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
