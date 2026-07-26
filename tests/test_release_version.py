@@ -47,6 +47,26 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertEqual(result["release_version_code"], "150")
         self.assertTrue(result["version_code_increases"])
 
+    def test_new_version_rejects_non_increasing_version_code(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_release(
+                current_version="v1.0.0",
+                current_version_code="100",
+                tags=[],
+                requested_version="v1.0.1",
+                requested_version_code="100",
+            )
+
+    def test_current_version_rejects_lower_version_code(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_release(
+                current_version="v1.0.1",
+                current_version_code="101",
+                tags=["v1.0.0"],
+                requested_version="v1.0.1",
+                requested_version_code="100",
+            )
+
     def test_explicit_current_version_reuses_current_code_for_resume(self) -> None:
         result = resolve_release(
             current_version="v1.0.1",
