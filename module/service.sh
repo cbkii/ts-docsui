@@ -6,7 +6,7 @@ MODDIR=${0%/*}
 STATE_DIR=/data/adb/ts18-documentsui-saf
 CFG=/data/adb/ts18-documentsui-saf.conf
 LOGDIR=$STATE_DIR/logs
-LOG=$LOGDIR/service-v100.log
+LOG=$LOGDIR/service-v101.log
 HELPER_SRC=$MODDIR/tools/rootfs-helper.sh
 HELPER_DST=$STATE_DIR/rootfs-helper.sh
 ROOT_PKG=com.cbkii.tsdocsui.rootprovider
@@ -301,7 +301,7 @@ refresh_picker_once() {
   is_on "$FIX_REFRESH_PICKER_ON_CHANGE" || return 0
   config_hash=$(sha256sum "$CFG" 2>/dev/null | awk '{print $1}')
   [ -n "$config_hash" ] || config_hash=unknown
-  desired="v1.0.0:$show:$config_hash"
+  desired="v1.0.1:$show:$config_hash"
   current=$(cat "$STATE_DIR/applied-state" 2>/dev/null || true)
   [ "$current" = "$desired" ] && { log "picker state already current"; return 0; }
 
@@ -334,7 +334,7 @@ case "$BOOT_WAIT_SECONDS" in ''|*[!0-9]*) BOOT_WAIT_SECONDS=2 ;; esac
 case "$ROOT_PROVIDER_STAGE_LIMIT_BYTES" in ''|*[!0-9]*) ROOT_PROVIDER_STAGE_LIMIT_BYTES=268435456 ;; esac
 case "$ROOT_PROVIDER_STAGE_DIR" in /storage/emulated/0/*) ;; *) ROOT_PROVIDER_STAGE_DIR=/storage/emulated/0/.TS18-Root-Provider ;; esac
 
-log "===== TS18 Full File Picker v1.0.0 start ====="
+log "===== TS18 Full File Picker v1.0.1 start ====="
 log "build=$(getprop ro.build.display.id 2>/dev/null) sdk=$(getprop ro.build.version.sdk 2>/dev/null) user=$TARGET_USER"
 
 attempt=0
