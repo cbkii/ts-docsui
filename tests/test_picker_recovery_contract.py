@@ -44,13 +44,12 @@ class PickerRecoveryContractTests(unittest.TestCase):
         self.assertIn("syntheticRootEntry", body)
         self.assertLess(body.index("localEntry"), body.index("RootShell.stat"))
 
-    def test_storage_and_shallow_device_root_list_locally_before_root_fallback(self) -> None:
+    def test_non_device_storage_lists_locally_before_root_fallback(self) -> None:
         source = self.read(
             "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootDocumentsProvider.java"
         )
         body = self.method_body(source, "private List<RootEntry> listEntries(ParsedId parent)")
         self.assertIn("!ROOT_DEVICE.equals", body)
-        self.assertIn('"/".equals(parent.path)', body)
         self.assertIn("localChildren", body)
         self.assertLess(body.index("localChildren"), body.index("RootShell.list"))
 
@@ -119,6 +118,19 @@ class PickerRecoveryContractTests(unittest.TestCase):
         launcher = self.read("module/tools/ts18-saf-launch.sh")
         self.assertIn("PICKER=com.android.documentsui/.picker.PickActivity", launcher)
         self.assertIn('am start -n "$PICKER"', launcher)
+
+    def test_shell_quote_emits_posix_embedded_quote_sequence(self) -> None:
+        source = self.read(
+            "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootShell.java"
+        )
+        line = next(line for line in source.splitlines() if "value.replace" in line)
+        self.assertIn(r'''value.replace("'", "'\\''")''', line)
+
+    def test_missing_timeout_never_hides_primary_storage(self) -> None:
+        service = self.read("module/service.sh")
+        self.assertIn("BOUNDED_COMMAND_SKIPPED=125", service)
+        self.assertIn("kept primary visible", service)
+        self.assertIn("/system/bin/toybox timeout", service)
 
 
 if __name__ == "__main__":
