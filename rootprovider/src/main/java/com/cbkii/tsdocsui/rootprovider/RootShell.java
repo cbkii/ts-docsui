@@ -22,7 +22,8 @@ import java.util.concurrent.TimeoutException;
 final class RootShell {
     static final String HELPER = "/data/adb/ts18-documentsui-saf/rootfs-helper.sh";
     private static final String TAG = "TS18RootProvider";
-    private static final long DEFAULT_TIMEOUT_SECONDS = 12L;
+    private static final long DEFAULT_TIMEOUT_SECONDS = 4L;
+    private static final long LIST_TIMEOUT_SECONDS = 8L;
     private static final ExecutorService IO_EXECUTOR = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "ts18-root-shell-io");
         t.setDaemon(true);
@@ -126,7 +127,7 @@ final class RootShell {
     }
 
     static boolean ping() {
-        Result result = run(5, "ping");
+        Result result = run(4, "ping");
         if (!result.ok()) {
             Log.w(TAG, "Root helper ping failed: exit=" + result.exitCode + " err=" + result.stderrText());
         }
@@ -134,7 +135,7 @@ final class RootShell {
     }
 
     static RootEntry stat(String path) {
-        Result result = run("stat", path);
+        Result result = run(4, "stat", path);
         if (!result.ok()) {
             return null;
         }
@@ -143,7 +144,7 @@ final class RootShell {
     }
 
     static List<RootEntry> list(String path) {
-        Result result = run("list", path);
+        Result result = run(LIST_TIMEOUT_SECONDS, "list", path);
         if (!result.ok()) {
             return Collections.emptyList();
         }
@@ -151,7 +152,7 @@ final class RootShell {
     }
 
     static long availableBytes(String path) {
-        Result result = run(6, "df", path);
+        Result result = run(3, "df", path);
         if (!result.ok()) {
             return -1L;
         }
@@ -220,18 +221,18 @@ final class RootShell {
             err = result.stdoutText().trim();
         }
         if (err.isEmpty()) {
-            err = "exit " + result.exitCode;
+            err = result.timedOut ? "timed out" : "exit " + result.exitCode;
         }
         return action + " failed: " + err;
     }
 
     private static List<RootEntry> parseEntries(String text) {
         List<RootEntry> result = new ArrayList<>();
-        for (String line : text.split("\\n")) {
+        for (String line : text.split("\n")) {
             if (line.isEmpty()) {
                 continue;
             }
-            String[] fields = line.split("\\t", -1);
+            String[] fields = line.split("\t", -1);
             if (fields.length < 6) {
                 continue;
             }
@@ -272,6 +273,7 @@ final class RootShell {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (ExecutionException | TimeoutException ignored) {
+            // Preserve bounded provider calls even if output collection failed.
         }
         return new byte[0];
     }
@@ -285,6 +287,6 @@ final class RootShell {
     }
 
     private static String shellQuote(String value) {
-        return "'" + value.replace("'", "'\\''") + "'";
+        return "'" + value.replace("'", "'\''") + "'";
     }
 }
