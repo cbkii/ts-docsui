@@ -21,6 +21,8 @@ After reboot, the picker can show:
 
 Do not use this module on TS10, TS10S, or unrelated units.
 
+This module does not install Magisk and does not root the head unit.
+
 ## Installation
 
 Install the ZIP from **Magisk > Modules > Install from storage**, then reboot.
