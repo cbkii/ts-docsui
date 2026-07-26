@@ -26,6 +26,8 @@ This module restores the normal Android 10 file picker and adds an extra root fi
 
 This module is not for TS10, TS10S, or unrelated units that only look similar.
 
+This module does not install Magisk and does not root the head unit.
+
 ## Source of the rooted firmware
 
 The Magisk-rooted TS18 firmware used with this project is sourced from the [Topway TS10 and TS18 community topic on 4PDA](https://4pda.to/forum/index.php?showtopic=1015856).
