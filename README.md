@@ -1,8 +1,8 @@
-# TS18 Full File Picker
+# 📂 File Picker for TS18
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [Русский](README.ru.md)
 
-This Magisk module fixes the Android file picker on supported TS18 car head units.
+This Magisk module fixes the Android file picker on supported TS18/Topway car head units.
 
 ## Why this module exists
 
@@ -18,13 +18,18 @@ This module restores the normal Android 10 file picker and adds an extra root fi
 - TS18 USB storage when a USB drive is connected.
 - File and folder selection for apps that use the Android system picker.
 
+> [!TIP]
+> The file picker may falsely display directory contents as empty or inaccessible...
+> 🔄 Try **refreshing** the current folder view;
+> initial loading of a directory can be buggy 🐛
+
 ## Requirements
 
-- A Topway **TS18** unit with Android 10.
-- UIS8581A / SP9863A TS18 hardware.
+- A Topway unit with Android 10; tested on **TS18** model.
+- UIS8581A / SP9863A TS18 hardware, or equivalent.
 - Magisk 28 or later already working.
 
-This module is not for TS10, TS10S, or unrelated units that only look similar.
+This module has not been tested on TS10, TS10S, or unrelated units that only look similar.
 
 This module does not install Magisk and does not root the head unit.
 
@@ -33,8 +38,8 @@ This module does not install Magisk and does not root the head unit.
 The Magisk-rooted TS18 firmware used with this project is sourced from the [Topway TS10 and TS18 community topic on 4PDA](https://4pda.to/forum/index.php?showtopic=1015856).
 
 4PDA is a third-party community. This project does not create, host, or verify the firmware found there.
-
-Only use firmware that exactly matches your unit's system version, board, screen, panel, and boot configuration. The wrong firmware can stop the unit from starting. Make a full backup before changing firmware. Stop when the match is not certain.
+> [!CAUTION]
+> Only use firmware that exactly matches your unit's system version, board, screen, panel, and boot configuration. The wrong firmware can stop the unit from starting. Make a full backup before changing firmware. Stop when the match is not certain.
 
 You do not need to reinstall firmware when Magisk already works on your unit.
 
@@ -50,10 +55,11 @@ After the reboot, open a file picker from an app. You should see normal internal
 
 ## When it does not work
 
-1. Confirm that the unit is TS18, Android 10, and already rooted with Magisk.
-2. Reboot once after installing or updating the module.
-3. In Magisk, open this module and press **Action**.
-4. Find the diagnostic ZIP in:
+1. First, try **refreshing** the current folder view, initial loading of a directory can be buggy.
+2. Confirm that the unit is TS18, Android 10, and already rooted with Magisk.
+3. Reboot once after installing or updating the module.
+4. In Magisk, open this module and press **Action**.
+5. Find the diagnostic ZIP in:
 
 ```text
 /storage/emulated/0/Download/TS18-SAF-Diagnostics/
