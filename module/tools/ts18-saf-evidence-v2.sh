@@ -49,9 +49,13 @@ umask 077
 # ----- preflight -----
 case "$TARGET_USER" in ''|*[!0-9]*) printf 'STOP: TARGET_USER must be numeric\n' >&2; exit 2 ;; esac
 case "$TIMEOUT_SECONDS" in ''|*[!0-9]*) printf 'STOP: TS18_SAF_TIMEOUT_SECONDS must be numeric\n' >&2; exit 2 ;; esac
-mkdir -p "$PRIVATE_BASE" "$EXPORT_BASE" 2>/dev/null || { printf 'STOP: cannot create diagnostic directories\n' >&2; exit 1; }
-rm -rf "$WORK" 2>/dev/null || true
-mkdir -p "$WORK" 2>/dev/null || { printf 'STOP: cannot create %s\n' "$WORK" >&2; exit 1; }
+case "$CLIENT_PACKAGE" in ''|*[!A-Za-z0-9._]*) printf 'STOP: TS18_SAF_CLIENT_PACKAGE is invalid\n' >&2; exit 2 ;; esac
+mkdir -p -- "$PRIVATE_BASE" "$EXPORT_BASE" 2>/dev/null || { printf 'STOP: cannot create diagnostic directories\n' >&2; exit 1; }
+if [ -e "$WORK" ] && ! rm -rf -- "$WORK" 2>/dev/null; then
+  printf 'STOP: cannot clear previous diagnostic work: %s\n' "$WORK" >&2
+  exit 1
+fi
+mkdir -p -- "$WORK" 2>/dev/null || { printf 'STOP: cannot create %s\n' "$WORK" >&2; exit 1; }
 for directory in identity module packages providers storage paths permissions root-provider logs crash files apks smoke uri-grants; do
   mkdir -p "$WORK/$directory" 2>/dev/null || { printf 'STOP: cannot create %s/%s\n' "$WORK" "$directory" >&2; exit 1; }
 done
@@ -205,8 +209,13 @@ for path in \
   /mnt/media_rw /storage/usbdisk0 /storage/usbdisk1 \
   /data/user/0/com.android.documentsui /data/user/0/$ROOT_PKG; do
   printf '\n--- %s ---\n' "$path" >> "$F"
-  ls -ldZ "$path" >> "$F" 2>&1 || ls -ld "$path" >> "$F" 2>&1 || true
-  readlink -f "$path" >> "$F" 2>&1 || true
+  if ! ls -ldZ "$path" >> "$F" 2>&1; then
+    # Some exact TS18 builds omit SELinux label support in ls; plain metadata remains useful.
+    ls -ld "$path" >> "$F" 2>&1 || printf 'path unavailable: %s\n' "$path" >> "$F"
+  fi
+  if ! readlink -f "$path" >> "$F" 2>&1; then
+    printf 'canonical path unavailable: %s\n' "$path" >> "$F"
+  fi
   run_sh_to 8 "$F" "find '$path' -mindepth 1 -maxdepth 1 -print | head -n 200"
 done
 
@@ -235,15 +244,20 @@ run_sh_to 20 "$WORK/logs/logcat-crash.txt" "logcat -b crash -d -v threadtime -t 
 run_to "$TIMEOUT_SECONDS" "$WORK/crash/activity-crashes.txt" dumpsys activity crashes
 run_sh_to 20 "$WORK/logs/dmesg-tail.txt" "dmesg | tail -n 3000"
 
-grep -Ei 'remountUidExternalStorage|remount.*external|mount mode|ExternalStorageProvider|AppOpsService.*notifyOpChanged|StorageManagerService.*opChanged' \
-  "$F" > "$WORK/logs/remount-provider-events.txt" 2>/dev/null || true
+if ! grep -Ei 'remountUidExternalStorage|remount.*external|AppOpsService.*notifyOpChanged|StorageManagerService.*opChanged' \
+  "$F" > "$WORK/logs/remount-provider-events.txt" 2>/dev/null; then
+  # No matching records is a valid quiet result, not a collection failure.
+  : > "$WORK/logs/remount-provider-events.txt"
+fi
 analyse_remount_events
 capture_system_server_stack
 
 if grep -Eiq 'ts18-documentsui-saf\.xml|component-override.*unknown|Tag component-override is unknown' "$F"; then
   warn 'unsupported TS18 component-override sysconfig warning is still present on the device'
-  grep -Ei 'ts18-documentsui-saf\.xml|component-override.*unknown|Tag component-override is unknown' "$F" \
-    > "$WORK/logs/unsupported-sysconfig-events.txt" 2>/dev/null || true
+  if ! grep -Ei 'ts18-documentsui-saf\.xml|component-override.*unknown|Tag component-override is unknown' "$F" \
+    > "$WORK/logs/unsupported-sysconfig-events.txt" 2>/dev/null; then
+    warn 'sysconfig warning was detected but matching lines could not be exported'
+  fi
 fi
 
 # ----- harmless functional smoke tests -----
@@ -302,10 +316,12 @@ say "Finalising immutable archive: $ARCHIVE"
 # Do not write into WORK after this point: archive input must remain immutable.
 if tar -czf "$ARCHIVE_PRIVATE" -C "$PRIVATE_BASE" "$RUN_ID" >/dev/null 2>&1 && \
    tar -tzf "$ARCHIVE_PRIVATE" >/dev/null 2>&1 && \
-   cp -f "$ARCHIVE_PRIVATE" "$ARCHIVE" 2>/dev/null && \
-   tar -tzf "$ARCHIVE" >/dev/null 2>&1; then
-  sha256sum "$ARCHIVE" > "$CHECKSUM" 2>/dev/null || true
-  rm -rf "$WORK" "$ARCHIVE_PRIVATE" 2>/dev/null || true
+   cp -f -- "$ARCHIVE_PRIVATE" "$ARCHIVE" 2>/dev/null && \
+   tar -tzf "$ARCHIVE" >/dev/null 2>&1 && \
+   sha256sum "$ARCHIVE" > "$CHECKSUM" 2>/dev/null; then
+  if ! rm -rf -- "$WORK" "$ARCHIVE_PRIVATE" 2>/dev/null; then
+    printf 'WARN: verified archive exported but private cleanup was incomplete\n' >&2
+  fi
   printf '==================================================\n'
   printf 'RESULT: %s\n' "$RESULT"
   printf 'Warnings: %s\n' "$WARN_COUNT"
