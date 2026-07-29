@@ -6,7 +6,10 @@
 - Make stale-provider and preferred-activity cleanup explicit one-time migrations.
 - Skip identical preference writes and duplicate recursive ownership repair; log mutation/no-op totals.
 - Keep root-provider failure isolated from the stock ExternalStorageProvider.
-- Add remount/provider event counts and the boot reconcile summary to diagnostics.
+- Remove the exact-device-unsupported `component-override` sysconfig overlay; PackageManager runtime reconciliation remains authoritative.
+- Replace the generic remount counter with structured UID/package/mode/rate analysis and bounded storm stack evidence.
+- Capture provider process mount namespaces, package identity changes, URI grants and functional provider health.
+- Add first-boot, settled-boot, root-denied, persisted-grant, USB and rollback acceptance procedures.
 
 ## v0.8.0 / versionCode 080
 
