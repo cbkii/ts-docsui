@@ -24,6 +24,9 @@ REQUIRED_FILES = [
     "tools/ts18-saf-deepdiag.sh",
     "tools/ts18-saf-diagnose.sh",
     "tools/ts18-saf-launch.sh",
+    "tools/ts18-saf-evidence-v2.sh",
+    "tools/ts18-saf-evidence-common.sh",
+    "tools/ts18-saf-evidence-remount.sh",
 ]
 
 EXECUTABLE_SCRIPTS = [
@@ -36,6 +39,9 @@ EXECUTABLE_SCRIPTS = [
     "tools/ts18-saf-deepdiag.sh",
     "tools/ts18-saf-diagnose.sh",
     "tools/ts18-saf-launch.sh",
+    "tools/ts18-saf-evidence-v2.sh",
+    "tools/ts18-saf-evidence-common.sh",
+    "tools/ts18-saf-evidence-remount.sh",
 ]
 
 ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]+$")
@@ -136,10 +142,11 @@ def main(argv: list[str] | None = None) -> int:
     forbidden_payloads = [
         "system/priv-app/ExternalStorageProvider/ExternalStorageProvider.apk",
         "system/priv-app/TS18LocalDocumentsProvider/TS18LocalDocumentsProvider.apk",
+        "system/etc/sysconfig/ts18-documentsui-saf.xml",
     ]
     present = [path for path in forbidden_payloads if (module_dir / path).exists()]
     if present:
-        return fail("module must not overlay known-problem provider APKs: " + ", ".join(present))
+        return fail("module contains known-problem or unsupported payloads: " + ", ".join(present))
 
     for rel in EXECUTABLE_SCRIPTS:
         path = module_dir / rel
