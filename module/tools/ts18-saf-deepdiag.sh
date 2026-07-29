@@ -6,7 +6,7 @@ MODE=${1:-full}
 TARGET_USER=${TARGET_USER:-0}
 TS=$(date '+%Y%m%d-%H%M%S' 2>/dev/null || echo now)
 OUT_BASE=${TS18_SAF_EXPORT_ROOT:-/storage/emulated/0/Download/TS18-SAF-Diagnostics}
-RUN_ID=ts18-docsui-v121-${MODE}-${TS}
+RUN_ID=ts18-docsui-v130-${MODE}-${TS}
 WORK=$OUT_BASE/$RUN_ID
 LOG=$WORK/collector.log
 SUMMARY=$WORK/SUMMARY.txt
@@ -287,6 +287,8 @@ copy_tree_limited /data/user/0/$ROOT_PKG "$WORK/files/data/user/0/$ROOT_PKG" 4
 F=$WORK/logs/logcat.txt
 section "$F" logs
 run_sh_to 45 "$F" "logcat -d -t 10000"
+grep -Ei 'remount|ExternalStorageProvider|com\.android\.externalstorage|com\.cbkii\.tsdocsui\.rootprovider' "$F" > "$WORK/logs/remount-provider-events.txt" 2>/dev/null || true
+REMOUNT_EVENT_COUNT=$(grep -Eic 'remount|mount mode|ExternalStorageProvider' "$WORK/logs/remount-provider-events.txt" 2>/dev/null || echo 0)
 run_sh_to "$TIMEOUT_SECONDS" "$F" "logcat -b events -d -t 5000"
 run_sh_to "$TIMEOUT_SECONDS" "$F" "logcat -b crash -d -t 2000"
 run_sh_to "$TIMEOUT_SECONDS" "$F" "dumpsys activity crashes"
@@ -322,6 +324,8 @@ safe_root_helper "$F" delete "$ROOT_SMOKE"
   echo "externalstorage=$(pm path com.android.externalstorage 2>/dev/null | head -n 1)"
   echo "rootprovider=$(pm path $ROOT_PKG 2>/dev/null | head -n 1)"
   echo "root_helper=$([ -x "$ROOT_HELPER" ] && echo present || echo missing)"
+  echo "remount_provider_event_count=${REMOUNT_EVENT_COUNT:-unknown}"
+  echo "service_reconcile_summary=$(grep 'reconcile summary' /data/adb/ts18-documentsui-saf/logs/service-v130.log 2>/dev/null | tail -n 1)"
   echo "output=$WORK"
 } > "$SUMMARY"
 
