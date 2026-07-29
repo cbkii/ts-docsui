@@ -7,12 +7,15 @@ analyse_remount_events() {
   grouped=$WORK/logs/remount-provider-summary.txt
   uidmap=$WORK/packages/uid-packages.tsv
   : > "$structured"
-  printf 'timestamp\tphase\tuid\tmode\tpackages\traw\n' >> "$structured"
+  printf 'timestamp\tevent_type\tphase\tuid\tmode\tpackages\traw\n' >> "$structured"
 
-  awk -F '\t' 'NF >= 2 { map[$2] = (map[$2] ? map[$2] "," $1 : $1) } END { for (uid in map) print uid "\t" map[uid] }' \
-    "$WORK/packages/package-stack.tsv" > "$uidmap" 2>/dev/null || true
+  if ! awk -F '\t' '$2 ~ /^[0-9]+$/ { map[$2] = (map[$2] ? map[$2] "," $1 : $1) } END { for (uid in map) print uid "\t" map[uid] }' \
+    "$WORK/packages/package-stack.tsv" > "$uidmap" 2>/dev/null; then
+    # Missing UID metadata reduces annotation quality but does not invalidate raw evidence.
+    : > "$uidmap"
+  fi
 
-  awk -v uidmap="$uidmap" '
+  if ! awk -v uidmap="$uidmap" '
     BEGIN {
       FS="\t"
       while ((getline line < uidmap) > 0) {
@@ -24,10 +27,13 @@ analyse_remount_events() {
     {
       raw=$0
       timestamp=$1 " " $2
-      phase="event"
       lower=tolower(raw)
-      if (lower ~ /start|begin/) phase="start"
-      else if (lower ~ /finish|complete| end/) phase="end"
+      event_type="context"
+      if (lower ~ /remountuidexternalstorage|remount.*external/) event_type="remount"
+      else if (lower ~ /notifyopchanged|storagemanagerservice.*opchanged/) event_type="appops"
+      phase="event"
+      if (event_type == "remount" && lower ~ /start|begin/) phase="start"
+      else if (event_type == "remount" && lower ~ /finish|complete| end/) phase="end"
       uid="unknown"
       mode="unknown"
       if (match(lower, /uid[=: (]+[0-9]+/)) {
@@ -42,28 +48,37 @@ analyse_remount_events() {
       }
       packages=(uid in pkg ? pkg[uid] : "unknown")
       gsub(/\t/, " ", raw)
-      print timestamp "\t" phase "\t" uid "\t" mode "\t" packages "\t" raw
+      print timestamp "\t" event_type "\t" phase "\t" uid "\t" mode "\t" packages "\t" raw
     }
-  ' "$raw" >> "$structured" 2>/dev/null || true
+  ' "$raw" >> "$structured" 2>/dev/null; then
+    # Keep the raw log when an OEM-specific line cannot be parsed.
+    warn 'structured remount parsing failed; raw remount evidence is still included'
+  fi
 
-  total=$(awk 'NR > 1 {count++} END {print count+0}' "$structured" 2>/dev/null)
-  starts=$(awk -F '\t' 'NR > 1 && $2 == "start" {count++} END {print count+0}' "$structured" 2>/dev/null)
-  seconds=$(awk -F '\t' 'NR > 1 {seen[$1]=1} END {for (x in seen) count++; print count+0}' "$structured" 2>/dev/null)
-  peak=$(awk -F '\t' 'NR > 1 {count[$1]++} END {max=0; for (x in count) if (count[x] > max) max=count[x]; print max+0}' "$structured" 2>/dev/null)
+  total=$(awk -F '\t' 'NR > 1 && $2 == "remount" {count++} END {print count+0}' "$structured" 2>/dev/null)
+  starts=$(awk -F '\t' 'NR > 1 && $2 == "remount" && $3 == "start" {count++} END {print count+0}' "$structured" 2>/dev/null)
+  ends=$(awk -F '\t' 'NR > 1 && $2 == "remount" && $3 == "end" {count++} END {print count+0}' "$structured" 2>/dev/null)
+  appops=$(awk -F '\t' 'NR > 1 && $2 == "appops" {count++} END {print count+0}' "$structured" 2>/dev/null)
+  seconds=$(awk -F '\t' 'NR > 1 && $2 == "remount" {seen[$1]=1} END {for (x in seen) count++; print count+0}' "$structured" 2>/dev/null)
+  peak=$(awk -F '\t' 'NR > 1 && $2 == "remount" {count[$1]++} END {max=0; for (x in count) if (count[x] > max) max=count[x]; print max+0}' "$structured" 2>/dev/null)
   average=$(awk -v total="$total" -v seconds="$seconds" 'BEGIN {if (seconds > 0) printf "%.2f", total/seconds; else print "0.00"}')
-  first=$(awk -F '\t' 'NR == 2 {print $1; exit}' "$structured" 2>/dev/null)
-  last=$(awk -F '\t' 'NR > 1 {value=$1} END {print value}' "$structured" 2>/dev/null)
+  first=$(awk -F '\t' 'NR > 1 && $2 == "remount" {print $1; exit}' "$structured" 2>/dev/null)
+  last=$(awk -F '\t' 'NR > 1 && $2 == "remount" {value=$1} END {print value}' "$structured" 2>/dev/null)
+  unmatched=$(awk -v starts="$starts" -v ends="$ends" 'BEGIN {delta=starts-ends; if (delta < 0) delta=-delta; print delta}')
 
   {
-    printf 'total_events=%s\n' "$total"
-    printf 'start_events=%s\n' "$starts"
-    printf 'distinct_seconds=%s\n' "$seconds"
-    printf 'average_events_per_second=%s\n' "$average"
+    printf 'remount_events=%s\n' "$total"
+    printf 'remount_start_events=%s\n' "$starts"
+    printf 'remount_end_events=%s\n' "$ends"
+    printf 'unmatched_start_or_end_events=%s\n' "$unmatched"
+    printf 'appops_context_events=%s\n' "$appops"
+    printf 'distinct_remount_seconds=%s\n' "$seconds"
+    printf 'average_remount_events_per_second=%s\n' "$average"
     printf 'peak_events_per_second=%s\n' "$peak"
-    printf 'first_event=%s\n' "${first:-none}"
-    printf 'last_event=%s\n' "${last:-none}"
-    printf '\n-- grouped by uid/package/mode/phase --\n'
-    awk -F '\t' 'NR > 1 {key=$3 "\t" $5 "\t" $4 "\t" $2; count[key]++} END {for (key in count) print count[key] "\t" key}' "$structured" | sort -nr
+    printf 'first_remount_event=%s\n' "${first:-none}"
+    printf 'last_remount_event=%s\n' "${last:-none}"
+    printf '\n-- grouped by type/uid/package/mode/phase --\n'
+    awk -F '\t' 'NR > 1 {key=$2 "\t" $4 "\t" $6 "\t" $5 "\t" $3; count[key]++} END {for (key in count) print count[key] "\t" key}' "$structured" | sort -nr
   } > "$grouped"
 
   REMOUNT_EVENT_COUNT=$total
@@ -71,7 +86,7 @@ analyse_remount_events() {
   REMOUNT_STORM=0
   if [ "$total" -ge "$REMOUNT_STORM_TOTAL_THRESHOLD" ] || [ "$peak" -ge "$REMOUNT_STORM_RATE_THRESHOLD" ]; then
     REMOUNT_STORM=1
-    warn "possible external-storage remount storm: total=$total peak_per_second=$peak"
+    warn "possible external-storage remount storm: remounts=$total peak_per_second=$peak"
   fi
 }
 
@@ -95,10 +110,10 @@ capture_system_server_stack() {
 }
 
 collect_reconcile_history() {
-  service_log=$STATE_DIR/logs/service-v130.log
+  service_log=$STATE_DIR/logs/service-v${VERSION_CODE}.log
   output=$WORK/module/reconcile-history.txt
   if [ ! -f "$service_log" ]; then
-    printf 'service_log=missing\n' > "$output"
+    printf 'service_log=missing path=%s\n' "$service_log" > "$output"
     LATEST_MUTATIONS=unknown
     return 0
   fi
@@ -127,15 +142,24 @@ update_package_baseline() {
   diff_file=$WORK/packages/package-stack-diff.txt
   if [ -f "$previous" ]; then
     copy_file_limited "$previous" "$WORK/packages/package-stack-previous.tsv"
-    diff -u "$previous" "$current" > "$diff_file" 2>&1 || true
+    if diff -u "$previous" "$current" > "$diff_file" 2>&1; then
+      :
+    else
+      rc=$?
+      if [ "$rc" -ne 1 ]; then
+        warn "package-stack comparison failed rc=$rc"
+      fi
+    fi
   else
-    printf 'No previous successful package snapshot exists.\n' > "$diff_file"
+    printf 'No previous package snapshot exists.\n' > "$diff_file"
   fi
   temp=$STATE_DIR/.last-package-stack.$$
-  if cp -f "$current" "$temp" 2>/dev/null && chmod 0600 "$temp" 2>/dev/null && mv -f "$temp" "$previous" 2>/dev/null; then
+  if cp -f -- "$current" "$temp" 2>/dev/null && chmod 0600 -- "$temp" 2>/dev/null && mv -f -- "$temp" "$previous" 2>/dev/null; then
     :
   else
-    rm -f "$temp" 2>/dev/null || true
+    if [ -e "$temp" ] && ! rm -f -- "$temp" 2>/dev/null; then
+      warn "temporary package baseline could not be removed: $temp"
+    fi
     warn 'could not update persistent package-stack baseline'
   fi
 }
