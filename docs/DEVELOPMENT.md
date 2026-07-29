@@ -8,6 +8,10 @@ User guides:
 - [简体中文](../README.zh-CN.md)
 - [Русский](../README.ru.md)
 
+Physical validation:
+
+- [Exact TS18 acceptance procedure](DEVICE_ACCEPTANCE.md)
+
 ## Scope
 
 This project targets Topway TS18 Android 10 head units on UIS8581A / SP9863A hardware with Magisk 28 or later.
@@ -45,6 +49,27 @@ The bundled root provider is separate. It supplies:
 
 Root access does not make read-only device-mapper mounts writable. `/system`, `/vendor`, and similar mounts remain read-only unless the firmware itself mounted them writable.
 
+## DocumentsUI component authority
+
+The exact TS18 Android 10 framework rejects the previously bundled sysconfig declaration with:
+
+```text
+Tag component-override is unknown
+```
+
+The module therefore does **not** ship `system/etc/sysconfig/ts18-documentsui-saf.xml`. PackageManager runtime reconciliation is the authority for enabling the known DocumentsUI entry points:
+
+```text
+com.android.documentsui/.picker.PickActivity
+com.android.documentsui/.files.FilesActivity
+com.android.documentsui/.files.LauncherActivity
+com.android.documentsui/.LauncherActivity
+com.android.documentsui/.ViewDownloadsActivity
+com.android.documentsui/.ScopedAccessActivity
+```
+
+A boot log warning that names the removed sysconfig file is an acceptance failure and usually means an older module payload is still mounted.
+
 ## Why internal storage was hidden
 
 Exact-device diagnostics proved that the stock provider publishes the `primary:` root and can list the top level of `/storage/emulated/0`.
@@ -63,6 +88,36 @@ content://com.android.externalstorage.documents/document/primary%3A/children
 ```
 
 After an important module or configuration change, the service repairs DocumentsUI data ownership, disables the obsolete `com.ts18.safprovider` experiment and App Manager picker interception, enables the known picker entry points, removes the DocumentsUI root cache once, and force-stops DocumentsUI. The next picker launch reads the corrected preferences.
+
+## Desired-state boot reconciliation
+
+The late-start service reads current state before changing it. It avoids repeating package installation, component changes, permission grants, AppOps writes, preference/helper replacement, Magisk-policy writes and recursive ownership repair when the desired state is already present.
+
+Stale-provider removal and preferred-activity cleanup are one-time migrations. Every run ends with:
+
+```text
+reconcile summary mutations=<N> noops=<N>
+```
+
+The first migration boot may contain finite, explained mutations. A second settled boot with unchanged configuration should report zero mutations. A functional provider failure is evidence for diagnostics; it must not trigger an AppOps rewrite loop.
+
+Root-provider failure or root denial must not disable, clear, refresh or otherwise mutate stock `com.android.externalstorage`.
+
+## AppOps and external-storage remounts
+
+Exact-device logs showed rapid alternating `remountUidExternalStorage` operations for the stock and root providers. The system-server stack associates those remounts with AppOps change notifications.
+
+The module now treats this as a formal physical acceptance gate:
+
+- AppOps are written only when current state differs;
+- the second settled boot must perform no AppOps mutation;
+- diagnostics preserve raw and structured remount events;
+- counts are grouped by UID, package, mode and phase;
+- total and peak events per second are reported;
+- a detected storm captures bounded system-server stack evidence;
+- provider process mount namespaces are collected.
+
+An AppOps line that says `allow` is not by itself proof that the provider received the intended storage namespace. Functional provider queries and process-specific `/proc/<pid>/mountinfo` evidence are also required.
 
 ## Root-provider operation
 
@@ -123,6 +178,10 @@ Installing this Magisk module does not require reflashing firmware when the devi
 ```text
 rootprovider/                   Android DocumentsProvider source
 module/                         Magisk module payload
+module/tools/ts18-saf-evidence-v2.sh
+                                Private-first exact-device collector
+module/tools/ts18-saf-deepdiag.sh
+                                Legacy compatibility collector
 scripts/build-root-provider.py  Build and copy the signed provider APK
 scripts/release_version.py      Resolve, validate, and apply release versions
 scripts/sync_runtime_version.py Synchronise generated runtime version markers
@@ -188,30 +247,50 @@ Release ZIPs must remain deterministic, STORE-only, non-ZIP64, and compatible wi
 
 CI proves source, APK, script, metadata, and ZIP structure. It cannot prove behaviour on a physical TS18 unit.
 
-A device acceptance pass should test:
+Use [DEVICE_ACCEPTANCE.md](DEVICE_ACCEPTANCE.md). The release gate includes:
 
-- `OPEN_DOCUMENT` from several non-Download internal folders;
-- `CREATE_DOCUMENT` in a non-Download folder;
-- `OPEN_DOCUMENT_TREE` for `/storage/emulated/0` and nested folders;
-- persistable URI access after restarting the client app;
-- root-provider browse and file operations where intended;
-- reboot and ACC sleep/wake behaviour.
+- first migration boot and second settled boot;
+- `OPEN_DOCUMENT`, `CREATE_DOCUMENT` and `OPEN_DOCUMENT_TREE` from real clients;
+- persisted URI access after client restart, reboot and ACC sleep/wake;
+- root-provider disabled, denied and granted states;
+- USB insertion/removal;
+- no unsupported sysconfig warning;
+- no sustained external-storage remount storm;
+- disable/remove plus reboot rollback.
 
 ## Diagnostics
 
 Press **Action** for the module in Magisk, or run:
 
 ```sh
-su -c '/data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh full'
+su -c '/data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh full'
 ```
 
-The verified archive is exported under:
+For a client-specific capture:
+
+```sh
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh boot2'
+```
+
+The collector:
+
+- derives the installed module version rather than assuming a build;
+- works privately under `/data/adb/ts18-documentsui-saf/diagnostics`;
+- skips a command instead of running it unbounded when no timeout implementation exists;
+- captures package identity, APK hashes and a previous/current package-stack diff;
+- captures permissions, AppOps, providers, URI grants and functional root queries;
+- captures DocumentsUI, stock provider, root provider and client process mount namespaces;
+- structures remount events and flags storm thresholds;
+- reports the latest two reconcile summaries;
+- exports only a verified tar archive and checksum.
+
+Verified archives are written under:
 
 ```text
 /storage/emulated/0/Download/TS18-SAF-Diagnostics/
 ```
 
-Diagnostics are user-started, bounded, local-only, and removed from their temporary working directory after the final archive is verified.
+Diagnostics are user-started, bounded and local-only. The collector removes its private working directory only after the exported archive passes an integrity check.
 
 ## Safety and rollback
 
