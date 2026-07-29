@@ -39,6 +39,16 @@ find_timeout() {
 
 TIMEOUT_CMD=$(find_timeout)
 
+bounded_capture() {
+  seconds=$1
+  shift
+  command_text=$*
+  [ -n "$TIMEOUT_CMD" ] || return 125
+  # TIMEOUT_CMD intentionally contains one executable and its timeout applet.
+  # shellcheck disable=SC2086
+  $TIMEOUT_CMD "$seconds" sh -c "$command_text"
+}
+
 run_to() {
   seconds=$1
   file=$2
@@ -88,8 +98,12 @@ copy_file_limited() {
     printf 'SKIP size=%s path=%s\n' "$size" "$source" >> "$WORK/files/SKIPPED-LARGE-FILES.txt"
     return 0
   fi
-  mkdir -p "$(dirname "$destination")" 2>/dev/null || return 0
-  if ! cp -a "$source" "$destination" >> "$LOG" 2>&1; then
+  parent=$(dirname "$destination")
+  if ! mkdir -p -- "$parent" 2>/dev/null; then
+    printf 'copy parent creation failed: %s\n' "$parent" >> "$LOG"
+    return 0
+  fi
+  if ! cp -a -- "$source" "$destination" >> "$LOG" 2>&1; then
     printf 'copy failed: %s\n' "$source" >> "$LOG"
   fi
 }
@@ -99,17 +113,39 @@ copy_tree_limited() {
   destination=$2
   depth=${3:-3}
   [ -d "$source" ] || return 0
-  find "$source" -maxdepth "$depth" -type f 2>/dev/null | while IFS= read -r file; do
+  list=$WORK/files/.copy-list.$$
+  if [ -n "$TIMEOUT_CMD" ]; then
+    # TIMEOUT_CMD intentionally contains one executable and its timeout applet.
+    # shellcheck disable=SC2086
+    if ! $TIMEOUT_CMD 20 find "$source" -maxdepth "$depth" -type f -print > "$list" 2>/dev/null; then
+      warn "bounded tree inventory incomplete: $source"
+    fi
+  else
+    printf 'SKIP timeout unavailable for tree copy: %s\n' "$source" >> "$LOG"
+    return 0
+  fi
+  count=0
+  while IFS= read -r file; do
+    count=$((count + 1))
+    if [ "$count" -gt 2000 ]; then
+      printf 'SKIP tree item limit reached: %s\n' "$source" >> "$LOG"
+      break
+    fi
     relative=${file#$source/}
     copy_file_limited "$file" "$destination/$relative"
-  done
+  done < "$list"
+  if ! rm -f -- "$list" 2>/dev/null; then
+    warn "temporary tree inventory could not be removed: $list"
+  fi
 }
 
 package_uid() {
   package=$1
-  uid=$(cmd package list packages -U "$package" 2>/dev/null | sed -n 's/.* uid://p' | head -n 1)
+  output=$(bounded_capture 8 "cmd package list packages -U '$package'" 2>/dev/null)
+  uid=$(printf '%s\n' "$output" | sed -n 's/.* uid://p' | head -n 1)
   case "$uid" in ''|*[!0-9]*)
-    uid=$(pm dump "$package" 2>/dev/null | sed -n 's/.*userId=\([0-9][0-9]*\).*/\1/p' | head -n 1)
+    output=$(bounded_capture 8 "pm dump '$package'" 2>/dev/null)
+    uid=$(printf '%s\n' "$output" | sed -n 's/.*userId=\([0-9][0-9]*\).*/\1/p' | head -n 1)
     ;;
   esac
   printf '%s' "$uid"
@@ -117,9 +153,13 @@ package_uid() {
 
 package_state() {
   package=$1
-  if pm list packages -e --user "$TARGET_USER" "$package" 2>/dev/null | grep -Fxq "package:$package"; then
+  enabled=$(bounded_capture 8 "pm list packages -e --user '$TARGET_USER' '$package'" 2>/dev/null)
+  if printf '%s\n' "$enabled" | grep -Fxq "package:$package"; then
     printf '%s' enabled
-  elif pm list packages -d --user "$TARGET_USER" "$package" 2>/dev/null | grep -Fxq "package:$package"; then
+    return 0
+  fi
+  disabled=$(bounded_capture 8 "pm list packages -d --user '$TARGET_USER' '$package'" 2>/dev/null)
+  if printf '%s\n' "$disabled" | grep -Fxq "package:$package"; then
     printf '%s' disabled
   else
     printf '%s' absent-for-user
@@ -129,11 +169,17 @@ package_state() {
 copy_pkg_apks() {
   package=$1
   destination=$WORK/apks/$package
-  mkdir -p "$destination" 2>/dev/null || return 0
-  pm path "$package" 2>/dev/null | sed 's/^package://' | while IFS= read -r apk; do
+  if ! mkdir -p -- "$destination" 2>/dev/null; then
+    printf 'APK destination unavailable: %s\n' "$destination" >> "$LOG"
+    return 0
+  fi
+  paths=$(bounded_capture 8 "pm path '$package'" 2>/dev/null)
+  printf '%s\n' "$paths" | sed 's/^package://' | while IFS= read -r apk; do
     [ -f "$apk" ] || continue
     copy_file_limited "$apk" "$destination/$(basename "$apk")"
-    sha256sum "$apk" >> "$WORK/apks/SHA256SUMS.txt" 2>/dev/null || true
+    if ! sha256sum "$apk" >> "$WORK/apks/SHA256SUMS.txt" 2>/dev/null; then
+      printf 'APK hash failed: %s\n' "$apk" >> "$LOG"
+    fi
   done
 }
 
@@ -141,10 +187,11 @@ package_snapshot_line() {
   package=$1
   uid=$(package_uid "$package")
   state=$(package_state "$package")
-  paths=$(pm path "$package" 2>/dev/null | sed 's/^package://' | tr '\n' ';' | sed 's/;$//')
-  version=$(dumpsys package "$package" 2>/dev/null | sed -n 's/.*versionName=//p' | head -n 1 | tr '\t\r\n' ' ')
-  code=$(dumpsys package "$package" 2>/dev/null | sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' | head -n 1)
-  flags=$(dumpsys package "$package" 2>/dev/null | sed -n 's/.*pkgFlags=\[\(.*\)\].*/\1/p' | head -n 1 | tr '\t\r\n' ' ')
+  paths=$(bounded_capture 8 "pm path '$package'" 2>/dev/null | sed 's/^package://' | tr '\n' ';' | sed 's/;$//')
+  dump=$(bounded_capture 12 "dumpsys package '$package'" 2>/dev/null)
+  version=$(printf '%s\n' "$dump" | sed -n 's/.*versionName=//p' | head -n 1 | tr '\t\r\n' ' ')
+  code=$(printf '%s\n' "$dump" | sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' | head -n 1)
+  flags=$(printf '%s\n' "$dump" | sed -n 's/.*pkgFlags=\[\(.*\)\].*/\1/p' | head -n 1 | tr '\t\r\n' ' ')
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$package" "${uid:-unknown}" "$state" "${code:-unknown}" "${version:-unknown}" "${flags:-unknown}" "${paths:-none}"
 }
 
@@ -197,9 +244,9 @@ safe_root_helper() {
 
 resolve_pid() {
   package=$1
-  pid=$(pidof "$package" 2>/dev/null | awk '{print $1}')
+  pid=$(bounded_capture 5 "pidof '$package'" 2>/dev/null | awk '{print $1}')
   if [ -z "$pid" ]; then
-    pid=$(ps -A 2>/dev/null | awk -v name="$package" '$NF == name {print $2; exit}')
+    pid=$(bounded_capture 5 "ps -A" 2>/dev/null | awk -v name="$package" '$NF == name {print $2; exit}')
   fi
   printf '%s' "$pid"
 }
@@ -227,8 +274,12 @@ capture_process_namespace() {
     "/proc/$pid/root/mnt/runtime/write/emulated/0" \
     "/proc/$pid/root/mnt/runtime/full/emulated/0"; do
     printf '\n--- %s ---\n' "$path" >> "$file"
-    ls -ldZ "$path" >> "$file" 2>&1 || ls -ld "$path" >> "$file" 2>&1 || true
-    readlink -f "$path" >> "$file" 2>&1 || true
+    if ! ls -ldZ "$path" >> "$file" 2>&1; then
+      ls -ld "$path" >> "$file" 2>&1 || printf 'path unavailable: %s\n' "$path" >> "$file"
+    fi
+    if ! readlink -f "$path" >> "$file" 2>&1; then
+      printf 'canonical path unavailable: %s\n' "$path" >> "$file"
+    fi
     run_sh_to 8 "$file" "find '$path' -mindepth 1 -maxdepth 1 -print | head -n 200"
   done
 }
