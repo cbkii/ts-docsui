@@ -15,6 +15,10 @@ ROOT_COMPONENT=$ROOT_PKG/.RootDocumentsProvider
 ROOT_AUTH=com.cbkii.tsdocsui.root.documents
 STALE_PROVIDER_PKG=com.ts18.safprovider
 APP_MANAGER_PKG=io.github.muntashirakon.AppManager
+MIGRATION_DIR=$STATE_DIR/migrations
+GENERATED_DIR=$STATE_DIR/generated
+MUTATION_COUNT=0
+NOOP_COUNT=0
 
 CONFIG_SCHEMA=2
 TARGET_USER=0
@@ -56,7 +60,7 @@ DIAG_COPY_RELEVANT_APKS=1
 DIAG_COPY_ALL_APKS=0
 DIAG_MAX_COPY_BYTES=52428800
 
-mkdir -p "$LOGDIR" 2>/dev/null || exit 0
+mkdir -p "$LOGDIR" "$MIGRATION_DIR" "$GENERATED_DIR" 2>/dev/null || exit 0
 if [ -f "$LOG" ]; then
   size=$(wc -c < "$LOG" 2>/dev/null || echo 0)
   case "$size" in ''|*[!0-9]*) size=0 ;; esac
@@ -119,17 +123,130 @@ pkg_uid() {
   printf '%s' "$uid"
 }
 
+record_mutation() {
+  MUTATION_COUNT=$((MUTATION_COUNT + 1))
+  log "MUTATION: $*"
+}
+
+record_noop() {
+  NOOP_COUNT=$((NOOP_COUNT + 1))
+  log "NO-OP: $*"
+}
+
+pkg_installed_for_user() {
+  pm list packages --user "$TARGET_USER" "$1" 2>/dev/null | grep -Fxq "package:$1"
+}
+
+pkg_enabled_for_user() {
+  pm list packages -e --user "$TARGET_USER" "$1" 2>/dev/null | grep -Fxq "package:$1"
+}
+
+pkg_disabled_for_user() {
+  pm list packages -d --user "$TARGET_USER" "$1" 2>/dev/null | grep -Fxq "package:$1"
+}
+
+component_override_state() {
+  component=$1
+  output=$(cmd package get-component-enabled-setting --user "$TARGET_USER" "$component" 2>/dev/null)
+  rc=$?
+  [ "$rc" -eq 0 ] || { echo unknown; return; }
+  case "$output" in
+    *COMPONENT_ENABLED_STATE_ENABLED*|enabled) echo enabled ;;
+    *COMPONENT_ENABLED_STATE_DISABLED*|*COMPONENT_ENABLED_STATE_DISABLED_USER*|disabled|disabled-user) echo disabled ;;
+    *COMPONENT_ENABLED_STATE_DEFAULT*|default) echo default ;;
+    *) echo unknown ;;
+  esac
+}
+
+permission_granted() {
+  pm dump "$1" 2>/dev/null | grep -F "$2: granted=true" >/dev/null 2>&1
+}
+
+appop_allowed() {
+  appops get --user "$TARGET_USER" "$1" "$2" 2>/dev/null | grep -Eq '(^|[[:space:]])allow([[:space:]]|;|$)'
+}
+
+run_migration_once() {
+  migration=$1
+  shift
+  marker=$MIGRATION_DIR/$migration
+  if [ -f "$marker" ]; then
+    record_noop "migration already applied: $migration"
+    return 0
+  fi
+  if "$@"; then
+    if : > "$marker" 2>/dev/null; then
+      record_mutation "migration applied: $migration"
+      return 0
+    fi
+    log "WARN: migration completed but marker write failed: $migration"
+    return 1
+  fi
+  log "WARN: migration failed and will be retried: $migration"
+  return 1
+}
+
+ensure_path_owner() {
+  path=$1
+  uid=$2
+  [ -e "$path" ] || return 0
+  owner=$(stat -c '%u:%g' "$path" 2>/dev/null)
+  if [ "$owner" = "$uid:$uid" ]; then
+    record_noop "owner already correct: $path"
+    return 0
+  fi
+  if chown "$uid:$uid" "$path" >> "$LOG" 2>&1; then
+    record_mutation "owner repaired: $path uid=$uid"
+    return 0
+  fi
+  log "WARN: owner repair failed: $path uid=$uid"
+  return 1
+}
+
+install_if_changed() {
+  generated=$1
+  target=$2
+  uid=$3
+  mode=$4
+  label=$5
+  if [ -f "$target" ] && cmp -s "$generated" "$target"; then
+    rm -f "$generated"
+    record_noop "$label content already current"
+    ensure_path_owner "$target" "$uid" || return 1
+    current_mode=$(stat -c '%a' "$target" 2>/dev/null)
+    if [ "$current_mode" != "$mode" ]; then
+      chmod "$mode" "$target" >> "$LOG" 2>&1 || return 1
+      record_mutation "$label mode repaired"
+    fi
+    return 0
+  fi
+  cp -f "$generated" "$target" >> "$LOG" 2>&1 || return 1
+  rm -f "$generated"
+  chown "$uid:$uid" "$target" >> "$LOG" 2>&1 || return 1
+  chmod "$mode" "$target" >> "$LOG" 2>&1 || return 1
+  restorecon "$target" >> "$LOG" 2>&1 || log "WARN: restorecon failed: $target"
+  record_mutation "$label content applied"
+}
+
 enable_pkg() {
   package=$1
   pkg_exists "$package" || { log "ERROR: package absent: $package"; return 1; }
-  if ! pm install-existing --user "$TARGET_USER" "$package" >> "$LOG" 2>&1; then
-    log "install-existing not applied for $package; enable will verify the usable package state"
+  if pkg_enabled_for_user "$package"; then
+    record_noop "package already enabled: $package"
+    return 0
+  fi
+  if ! pkg_installed_for_user "$package"; then
+    output=$(pm install-existing --user "$TARGET_USER" "$package" 2>&1)
+    rc=$?
+    echo "$output" >> "$LOG"
+    [ "$rc" -eq 0 ] || { log "ERROR: install-existing failed: $package rc=$rc"; return "$rc"; }
+    record_mutation "installed existing package for user: $package"
   fi
   output=$(pm enable --user "$TARGET_USER" "$package" 2>&1)
   rc=$?
   echo "$output" >> "$LOG"
   if [ "$rc" -eq 0 ]; then
-    log "enabled package: $package"
+    record_mutation "enabled package: $package"
     return 0
   fi
   log "ERROR: failed to enable package: $package rc=$rc"
@@ -138,12 +255,16 @@ enable_pkg() {
 
 disable_pkg() {
   package=$1
-  pkg_exists "$package" || { log "package absent for disable: $package"; return 0; }
+  pkg_exists "$package" || { record_noop "package absent for disable: $package"; return 0; }
+  if pkg_disabled_for_user "$package"; then
+    record_noop "package already disabled: $package"
+    return 0
+  fi
   output=$(pm disable-user --user "$TARGET_USER" "$package" 2>&1)
   rc=$?
   echo "$output" >> "$LOG"
   if [ "$rc" -eq 0 ]; then
-    log "disabled package: $package"
+    record_mutation "disabled package: $package"
     return 0
   fi
   log "WARN: failed to disable package: $package rc=$rc"
@@ -154,11 +275,16 @@ enable_component() {
   component=$1
   package=${component%%/*}
   pkg_exists "$package" || { log "ERROR: component package absent: $component"; return 1; }
+  state=$(component_override_state "$component")
+  if [ "$state" = enabled ]; then
+    record_noop "component already enabled: $component"
+    return 0
+  fi
   output=$(pm enable --user "$TARGET_USER" "$component" 2>&1)
   rc=$?
   echo "$output" >> "$LOG"
   if [ "$rc" -eq 0 ]; then
-    log "enabled component: $component"
+    record_mutation "enabled component: $component previous=$state"
     return 0
   fi
   log "ERROR: failed to enable component: $component rc=$rc"
@@ -168,7 +294,12 @@ enable_component() {
 disable_component() {
   component=$1
   package=${component%%/*}
-  pkg_exists "$package" || { log "component package absent for disable: $component"; return 0; }
+  pkg_exists "$package" || { record_noop "component package absent for disable: $component"; return 0; }
+  state=$(component_override_state "$component")
+  if [ "$state" = disabled ]; then
+    record_noop "component already disabled: $component"
+    return 0
+  fi
   output=$(pm disable-user --user "$TARGET_USER" "$component" 2>&1)
   rc=$?
   echo "$output" >> "$LOG"
@@ -178,7 +309,7 @@ disable_component() {
     echo "$output" >> "$LOG"
   fi
   if [ "$rc" -eq 0 ]; then
-    log "disabled component: $component"
+    record_mutation "disabled component: $component previous=$state"
     return 0
   fi
   log "WARN: failed to disable component: $component rc=$rc"
@@ -189,24 +320,36 @@ grant_if_requested() {
   package=$1
   permission=$2
   pkg_exists "$package" || return 0
-  if pm dump "$package" 2>/dev/null | grep -Fq "$permission"; then
-    output=$(pm grant --user "$TARGET_USER" "$package" "$permission" 2>&1)
-    rc=$?
-    echo "$output" >> "$LOG"
-    [ "$rc" -eq 0 ] && log "granted permission: $package $permission" || log "WARN: permission grant failed: $package $permission rc=$rc"
-  else
-    log "skip permission not requested: $package $permission"
+  if ! pm dump "$package" 2>/dev/null | grep -Fq "$permission"; then
+    record_noop "permission not requested: $package $permission"
+    return 0
   fi
+  if permission_granted "$package" "$permission"; then
+    record_noop "permission already granted: $package $permission"
+    return 0
+  fi
+  output=$(pm grant --user "$TARGET_USER" "$package" "$permission" 2>&1)
+  rc=$?
+  echo "$output" >> "$LOG"
+  [ "$rc" -eq 0 ] &&
+    record_mutation "granted permission: $package $permission" ||
+    log "WARN: permission grant failed: $package $permission rc=$rc"
 }
 
 set_appop() {
   package=$1
   operation=$2
   pkg_exists "$package" || return 0
+  if appop_allowed "$package" "$operation"; then
+    record_noop "app-op already allowed: $package $operation"
+    return 0
+  fi
   output=$(appops set --user "$TARGET_USER" "$package" "$operation" allow 2>&1)
   rc=$?
   echo "$output" >> "$LOG"
-  [ "$rc" -eq 0 ] && log "set app-op: $package $operation" || log "WARN: app-op failed: $package $operation rc=$rc"
+  [ "$rc" -eq 0 ] &&
+    record_mutation "set app-op: $package $operation" ||
+    log "WARN: app-op failed: $package $operation rc=$rc"
 }
 
 find_timeout() {
@@ -248,20 +391,27 @@ repair_package_data_owner() {
   package=$1
   uid=$(pkg_uid "$package")
   case "$uid" in ''|*[!0-9]*) log "ERROR: UID unavailable for ownership repair: $package"; return 1 ;; esac
+  checked=0
   repaired=0
   for base in "/data/user/$TARGET_USER/$package" "/data/data/$package" "/data/user_de/$TARGET_USER/$package"; do
     [ -e "$base" ] || continue
+    checked=$((checked + 1))
+    mismatch=$(find "$base" -xdev \( ! -user "$uid" -o ! -group "$uid" \) -print -quit 2>/dev/null)
+    if [ -z "$mismatch" ]; then
+      record_noop "package data ownership already correct: $base"
+      continue
+    fi
     if chown -R "$uid:$uid" "$base" >> "$LOG" 2>&1; then
       repaired=$((repaired + 1))
+      record_mutation "package data ownership repaired: $base uid=$uid first_mismatch=$mismatch"
     else
       log "WARN: owner repair failed: $base uid=$uid"
+      continue
     fi
-    if ! restorecon -RF "$base" >> "$LOG" 2>&1; then
-      # Ownership is required; restorecon is best-effort on this exact SELinux-permissive TS18.
+    restorecon -RF "$base" >> "$LOG" 2>&1 ||
       log "WARN: restorecon failed after owner repair: $base"
-    fi
   done
-  log "package data ownership checked: $package uid=$uid paths=$repaired"
+  log "package data ownership reconciled: $package uid=$uid checked=$checked repaired=$repaired"
   return 0
 }
 
@@ -289,7 +439,7 @@ cleanup_stale_provider() {
 
 clear_picker_preferred_activities() {
   package=$1
-  pkg_exists "$package" || return 0
+  pkg_exists "$package" || { record_noop "preferred-activity package absent: $package"; return 0; }
   output=$(cmd package clear-package-preferred-activities "$package" 2>&1)
   rc=$?
   echo "$output" >> "$LOG"
@@ -298,7 +448,14 @@ clear_picker_preferred_activities() {
     rc=$?
     echo "$output" >> "$LOG"
   fi
-  [ "$rc" -eq 0 ] && log "cleared preferred activities: $package" || log "WARN: could not clear preferred activities: $package rc=$rc"
+  [ "$rc" -eq 0 ] &&
+    record_mutation "cleared preferred activities: $package" ||
+    log "WARN: could not clear preferred activities: $package rc=$rc"
+}
+
+cleanup_picker_preferred_migration() {
+  clear_picker_preferred_activities "$APP_MANAGER_PKG"
+  clear_picker_preferred_activities com.google.android.documentsui
 }
 
 prepare_stage_dir() {
@@ -325,8 +482,11 @@ write_root_provider_prefs() {
   base=/data/user/$TARGET_USER/$ROOT_PKG
   prefs_dir=$base/shared_prefs
   prefs_file=$prefs_dir/provider.xml
+  generated=$GENERATED_DIR/root-provider.xml
   mkdir -p "$prefs_dir" 2>/dev/null || { log "ERROR: cannot create root provider prefs"; return 1; }
-  cat > "$prefs_file" <<EOPREF
+  ensure_path_owner "$base" "$uid" || return 1
+  ensure_path_owner "$prefs_dir" "$uid" || return 1
+  cat > "$generated" <<EOPREF
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
     <boolean name="showInternal" value="$(bool_xml "$ROOT_PROVIDER_SHOW_INTERNAL")" />
@@ -340,17 +500,7 @@ write_root_provider_prefs() {
     <long name="stageLimitBytes" value="$ROOT_PROVIDER_STAGE_LIMIT_BYTES" />
 </map>
 EOPREF
-  if ! chown -R "$uid:$uid" "$base" >> "$LOG" 2>&1; then
-    log "WARN: root-provider preference ownership repair failed uid=$uid"
-  fi
-  if ! chmod 0600 "$prefs_file" >> "$LOG" 2>&1; then
-    log "WARN: root-provider preference mode repair failed"
-  fi
-  if ! restorecon -RF "$base" >> "$LOG" 2>&1; then
-    # Best-effort on this exact SELinux-permissive TS18; ownership/mode are authoritative here.
-    log "WARN: root-provider preference restorecon failed"
-  fi
-  log "wrote root provider preferences uid=$uid"
+  install_if_changed "$generated" "$prefs_file" "$uid" 600 "root-provider preferences"
 }
 
 find_magisk_bin() {
@@ -422,11 +572,8 @@ write_documentsui_prefs() {
   uid=$(pkg_uid com.android.documentsui)
   case "$uid" in ''|*[!0-9]*) log "ERROR: DocumentsUI UID unavailable"; return 1 ;; esac
   if [ "$show" = 1 ]; then value=true; else value=false; fi
-  for base in "/data/user/$TARGET_USER/com.android.documentsui" "/data/data/com.android.documentsui"; do
-    mkdir -p "$base/shared_prefs" 2>/dev/null || continue
-    for name in com.android.documentsui_preferences.xml com.android.documentsui.xml DocumentsUI.xml; do
-      file=$base/shared_prefs/$name
-      cat > "$file" <<EOPREF
+  generated=$GENERATED_DIR/documentsui-preferences.xml
+  cat > "$generated" <<EOPREF
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
     <boolean name="includeDeviceRoot" value="$value" />
@@ -444,25 +591,21 @@ write_documentsui_prefs() {
     <boolean name="fileSize" value="true" />
 </map>
 EOPREF
-      if ! chown "$uid:$uid" "$file" >> "$LOG" 2>&1; then
-        log "ERROR: DocumentsUI preference ownership failed: $file uid=$uid"
-        return 1
-      fi
-      if ! chmod 0600 "$file" >> "$LOG" 2>&1; then
-        log "ERROR: DocumentsUI preference mode failed: $file"
-        return 1
-      fi
+  template=$generated
+  applied=0
+  for base in "/data/user/$TARGET_USER/com.android.documentsui" "/data/data/com.android.documentsui"; do
+    mkdir -p "$base/shared_prefs" 2>/dev/null || continue
+    ensure_path_owner "$base" "$uid" || return 1
+    ensure_path_owner "$base/shared_prefs" "$uid" || return 1
+    for name in com.android.documentsui_preferences.xml com.android.documentsui.xml DocumentsUI.xml; do
+      generated=$GENERATED_DIR/$name
+      cp -f "$template" "$generated" || return 1
+      install_if_changed "$generated" "$base/shared_prefs/$name" "$uid" 600         "DocumentsUI preferences $base/$name" || return 1
+      applied=$((applied + 1))
     done
-    if ! chown -R "$uid:$uid" "$base/shared_prefs" >> "$LOG" 2>&1; then
-      log "ERROR: DocumentsUI shared_prefs ownership failed: $base"
-      return 1
-    fi
-    if ! restorecon -RF "$base" >> "$LOG" 2>&1; then
-      # Best-effort on this exact SELinux-permissive TS18; package UID ownership is required.
-      log "WARN: DocumentsUI restorecon failed: $base"
-    fi
   done
-  log "DocumentsUI action-scoped internal roots visible=$show uid=$uid"
+  rm -f "$template"
+  log "DocumentsUI action-scoped internal roots visible=$show uid=$uid files=$applied"
 }
 
 refresh_picker_once() {
@@ -595,7 +738,8 @@ done
 log "boot wait completed after $attempt checks"
 
 if is_on "$FIX_DISABLE_STALE_TS18_PROVIDER"; then
-  cleanup_stale_provider
+  run_migration_once stale-provider-v121 cleanup_stale_provider ||
+    log "WARN: stale provider migration remains pending"
 fi
 
 if is_on "$FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR"; then
@@ -607,8 +751,8 @@ if is_on "$FIX_DISABLE_APP_MANAGER_PICKER_INTERCEPTOR"; then
   fi
 fi
 if is_on "$FIX_CLEAR_PICKER_PREFERRED_ACTIVITIES"; then
-  clear_picker_preferred_activities "$APP_MANAGER_PKG"
-  clear_picker_preferred_activities com.google.android.documentsui
+  run_migration_once picker-preferred-v121 cleanup_picker_preferred_migration ||
+    log "WARN: picker preferred-activity migration remains pending"
 fi
 
 if is_on "$FIX_ENABLE_AOSP_DOCUMENTSUI"; then
@@ -752,11 +896,6 @@ esac
 if ! write_documentsui_prefs "$external_show"; then
   log "ERROR: DocumentsUI advanced-root preferences could not be repaired"
 fi
-if is_on "$FIX_REPAIR_DOCUMENTSUI_DATA_OWNER"; then
-  if ! repair_package_data_owner com.android.documentsui; then
-    log "ERROR: final DocumentsUI private-data ownership repair failed"
-  fi
-fi
 refresh_picker_once "$external_show"
 
 if is_on "$FIX_WARM_UP_PROVIDERS"; then
@@ -783,5 +922,6 @@ if is_on "$DIAG_AUTO_RUN_ON_BOOT" && [ -x "$MODDIR/tools/ts18-saf-deepdiag.sh" ]
   fi
 fi
 
+log "reconcile summary mutations=$MUTATION_COUNT noops=$NOOP_COUNT"
 log "service complete"
 exit 0
