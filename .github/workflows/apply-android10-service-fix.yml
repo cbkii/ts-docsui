@@ -1,0 +1,70 @@
+name: Apply Android 10 service fix
+
+'on':
+  push:
+    branches:
+      - feat/idempotent-provider-reconciliation
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feat/idempotent-provider-reconciliation
+
+      - name: Apply reviewed service blob and regression contract
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SERVICE_BLOB: 6a03a7177a2e23be65fd533a99b5f2d1ab5305c2
+          SERVICE_SHA256: 6149b2f6b6908a8e4f14db38c0374f4262fa556e598873eff3cf76902271b390
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${SERVICE_BLOB}" --jq .content \
+            | tr -d '\n' \
+            | base64 -d > module/service.sh
+          chmod 0755 module/service.sh
+          printf '%s  %s\n' "${SERVICE_SHA256}" module/service.sh | sha256sum -c -
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/test_picker_recovery_contract.py')
+          text = path.read_text(encoding='utf-8')
+          method = '''    def test_component_state_falls_back_to_android10_dumpsys(self) -> None:
+              service = self.read("module/service.sh")
+              body = self.method_body(service, "component_override_state()")
+              self.assertIn("get-component-enabled-setting", body)
+              self.assertIn('dumpsys package "$package"', body)
+              self.assertIn("enabledComponents", body)
+              self.assertIn("disabledComponents", body)
+              self.assertIn("default", body)
+
+          '''
+          marker = '    def test_documentsui_entrypoints_are_runtime_reconciled(self) -> None:\n'
+          if 'test_component_state_falls_back_to_android10_dumpsys' not in text:
+              if marker not in text:
+                  raise SystemExit('test insertion marker missing')
+              text = text.replace(marker, method + marker, 1)
+          path.write_text(text, encoding='utf-8', newline='\n')
+          PY
+
+          sh -n module/service.sh
+          python3 -m py_compile tests/test_picker_recovery_contract.py
+          rm -f .github/workflows/apply-android10-service-fix.yml
+
+      - name: Commit exact reviewed changes
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add module/service.sh tests/test_picker_recovery_contract.py .github/workflows/apply-android10-service-fix.yml
+          git diff --cached --check
+          git commit -m 'Complete Android 10 component-state reconciliation'
+          git push origin HEAD:feat/idempotent-provider-reconciliation
