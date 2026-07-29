@@ -106,9 +106,52 @@ class PickerRecoveryContractTests(unittest.TestCase):
         refresh = self.method_body(service, "refresh_picker_once()")
         self.assertNotIn('chmod 0644 "$CFG" 2>/dev/null || true', load_config)
         self.assertIn("runtime config created but chmod 0644 was rejected", load_config)
-        self.assertIn("install-existing not applied", enable_pkg)
-        self.assertNotIn("install-existing --user", enable_pkg.split("if !", 1)[0])
+        self.assertIn('record_noop "package already enabled', enable_pkg)
+        self.assertIn('if ! pkg_installed_for_user "$package"', enable_pkg)
+        self.assertIn("pm install-existing --user", enable_pkg)
         self.assertIn('rm -f -- "$base"/databases/roots.db*', refresh)
+
+    def test_boot_reconciler_has_explicit_noop_boundaries(self) -> None:
+        service = self.read("module/service.sh")
+        required = (
+            "record_mutation()",
+            "record_noop()",
+            "pkg_enabled_for_user()",
+            "component_override_state()",
+            "permission_granted()",
+            "appop_allowed()",
+            "install_if_changed()",
+            "run_migration_once()",
+            'record_noop "package already enabled',
+            'record_noop "component already enabled',
+            'record_noop "permission already granted',
+            'record_noop "app-op already allowed',
+            'cmp -s "$generated" "$target"',
+            'reconcile summary mutations=$MUTATION_COUNT noops=$NOOP_COUNT',
+        )
+        for marker in required:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, service)
+
+    def test_destructive_repairs_are_one_time_or_mismatch_gated(self) -> None:
+        service = self.read("module/service.sh")
+        owner = self.method_body(service, "repair_package_data_owner()")
+        self.assertLess(owner.index("first_mismatch"), owner.index('chown -R "$uid:$uid"'))
+        self.assertIn("run_migration_once stale-provider-v121", service)
+        self.assertIn("run_migration_once picker-preferred-v121", service)
+        self.assertEqual(
+            1,
+            service.count("repair_package_data_owner com.android.documentsui"),
+            "DocumentsUI ownership must not receive a duplicate recursive pass",
+        )
+
+    def test_root_provider_failure_does_not_mutate_stock_external_provider(self) -> None:
+        service = self.read("module/service.sh")
+        start = service.index('if is_on "$FIX_ENABLE_ROOT_FILE_PROVIDER"')
+        end = service.index("MIXPLORER_PKG=", start)
+        root_block = service[start:end]
+        self.assertNotIn("com.android.externalstorage", root_block)
+        self.assertIn('disable_component "$ROOT_COMPONENT"', root_block)
 
     def test_default_config_forces_proven_primary_root_visible(self) -> None:
         config = self.read("module/config.default")
