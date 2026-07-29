@@ -466,12 +466,27 @@ prepare_stage_dir() {
       ROOT_PROVIDER_STAGE_DIR=/storage/emulated/0/.TS18-Root-Provider
       ;;
   esac
-  mkdir -p "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1 || return 1
-  if ! chmod 0777 "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1; then
-    log "WARN: staging chmod was rejected; shared-storage mediation may still provide access"
+  if [ ! -d "$ROOT_PROVIDER_STAGE_DIR" ]; then
+    mkdir -p "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1 || return 1
+    record_mutation "created root provider staging directory: $ROOT_PROVIDER_STAGE_DIR"
+  else
+    record_noop "root provider staging directory already exists"
   fi
-  if ! find "$ROOT_PROVIDER_STAGE_DIR" -maxdepth 1 -type f -name 'root-*.stage' -mmin +60 -delete >> "$LOG" 2>&1; then
-    log "WARN: stale staging cleanup failed; current picker launch remains valid"
+  stage_mode=$(stat -c '%a' "$ROOT_PROVIDER_STAGE_DIR" 2>/dev/null)
+  if [ "$stage_mode" != 777 ]; then
+    if chmod 0777 "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1; then
+      record_mutation "root provider staging mode repaired: previous=$stage_mode"
+    else
+      log "WARN: staging chmod was rejected; shared-storage mediation may still provide access"
+    fi
+  else
+    record_noop "root provider staging mode already current"
+  fi
+  deleted=$(find "$ROOT_PROVIDER_STAGE_DIR" -maxdepth 1 -type f -name 'root-*.stage' -mmin +60 -print -delete 2>> "$LOG")
+  if [ -n "$deleted" ]; then
+    record_mutation "removed stale staging files: $deleted"
+  else
+    record_noop "no stale staging files"
   fi
   log "root provider staging directory ready: $ROOT_PROVIDER_STAGE_DIR"
 }
@@ -521,9 +536,14 @@ auto_grant_root() {
   case "$uid" in ''|*[!0-9]*) log "WARN: cannot auto-grant root: UID unavailable"; return 1 ;; esac
   magisk_bin=$(find_magisk_bin)
   [ -n "$magisk_bin" ] || { log "WARN: cannot auto-grant root: magisk command missing"; return 1; }
+  current=$("$magisk_bin" --sqlite "SELECT policy FROM policies WHERE uid=$uid;" 2>/dev/null)
+  if echo "$current" | grep -Eq 'policy[^0-9]*2|(^|[|[:space:]])2([|[:space:]]|$)'; then
+    record_noop "Magisk root policy already granted: $ROOT_PKG uid=$uid"
+    return 0
+  fi
   sql="REPLACE INTO policies (uid, policy, until, logging, notification) VALUES ($uid, 2, 0, 1, 0);"
   if "$magisk_bin" --sqlite "$sql" >> "$LOG" 2>&1; then
-    log "Magisk root policy granted to $ROOT_PKG uid=$uid"
+    record_mutation "Magisk root policy granted: $ROOT_PKG uid=$uid"
     return 0
   fi
   log "WARN: Magisk root policy grant failed; picker remains usable and root access may prompt later"
@@ -533,19 +553,26 @@ auto_grant_root() {
 install_helper() {
   [ -f "$HELPER_SRC" ] || { log "ERROR: root helper source missing: $HELPER_SRC"; return 1; }
   mkdir -p "$STATE_DIR" 2>/dev/null || return 1
-  cp -f "$HELPER_SRC" "$HELPER_DST" >> "$LOG" 2>&1 || return 1
-  if ! chown 0:0 "$HELPER_DST" >> "$LOG" 2>&1; then
-    log "WARN: helper ownership repair failed"
+  helper_current=0
+  if [ -f "$HELPER_DST" ] && cmp -s "$HELPER_SRC" "$HELPER_DST"; then
+    owner=$(stat -c '%u:%g' "$HELPER_DST" 2>/dev/null)
+    mode=$(stat -c '%a' "$HELPER_DST" 2>/dev/null)
+    [ "$owner" = 0:0 ] && [ "$mode" = 755 ] && helper_current=1
   fi
+  if [ "$helper_current" -eq 1 ]; then
+    record_noop "root helper already current: $HELPER_DST"
+    return 0
+  fi
+  cp -f "$HELPER_SRC" "$HELPER_DST" >> "$LOG" 2>&1 || return 1
+  chown 0:0 "$HELPER_DST" >> "$LOG" 2>&1 ||
+    log "WARN: helper ownership repair failed"
   if ! chmod 0755 "$HELPER_DST" >> "$LOG" 2>&1; then
     log "ERROR: helper executable mode could not be set"
     return 1
   fi
-  if ! restorecon "$HELPER_DST" >> "$LOG" 2>&1; then
-    # Best-effort on this exact SELinux-permissive TS18; executable mode is required.
+  restorecon "$HELPER_DST" >> "$LOG" 2>&1 ||
     log "WARN: helper restorecon failed"
-  fi
-  log "installed root helper: $HELPER_DST"
+  record_mutation "installed or repaired root helper: $HELPER_DST"
   return 0
 }
 
