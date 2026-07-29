@@ -60,13 +60,18 @@ DIAG_COPY_RELEVANT_APKS=1
 DIAG_COPY_ALL_APKS=0
 DIAG_MAX_COPY_BYTES=52428800
 
-mkdir -p "$LOGDIR" "$MIGRATION_DIR" "$GENERATED_DIR" 2>/dev/null || exit 0
+if ! mkdir -p -- "$LOGDIR" "$MIGRATION_DIR" "$GENERATED_DIR" 2>/dev/null; then
+  # The service cannot record or reconcile safely without its private state directories.
+  exit 0
+fi
 if [ -f "$LOG" ]; then
   size=$(wc -c < "$LOG" 2>/dev/null || echo 0)
   case "$size" in ''|*[!0-9]*) size=0 ;; esac
   if [ "$size" -gt 524288 ]; then
     # Best-effort history only; failure is safe because the current log remains usable.
-    mv -f "$LOG" "$LOG.previous" 2>/dev/null || true
+    if ! mv -f -- "$LOG" "$LOG.previous" 2>/dev/null; then
+      :
+    fi
   fi
 fi
 
@@ -91,8 +96,8 @@ valid_value() {
 
 load_config() {
   if [ ! -f "$CFG" ] && [ -f "$MODDIR/config.default" ]; then
-    if cp -f "$MODDIR/config.default" "$CFG" 2>/dev/null; then
-      if ! chmod 0644 "$CFG" 2>/dev/null; then
+    if cp -f -- "$MODDIR/config.default" "$CFG" 2>/dev/null; then
+      if ! chmod 0644 -- "$CFG" 2>/dev/null; then
         log "WARN: runtime config created but chmod 0644 was rejected"
       fi
       log "created runtime config from module defaults"
@@ -195,7 +200,7 @@ ensure_path_owner() {
     record_noop "owner already correct: $path"
     return 0
   fi
-  if chown "$uid:$uid" "$path" >> "$LOG" 2>&1; then
+  if chown -- "$uid:$uid" "$path" >> "$LOG" 2>&1; then
     record_mutation "owner repaired: $path uid=$uid"
     return 0
   fi
@@ -210,20 +215,20 @@ install_if_changed() {
   mode=$4
   label=$5
   if [ -f "$target" ] && cmp -s "$generated" "$target"; then
-    rm -f "$generated"
+    rm -f -- "$generated"
     record_noop "$label content already current"
     ensure_path_owner "$target" "$uid" || return 1
     current_mode=$(stat -c '%a' "$target" 2>/dev/null)
     if [ "$current_mode" != "$mode" ]; then
-      chmod "$mode" "$target" >> "$LOG" 2>&1 || return 1
+      chmod "$mode" -- "$target" >> "$LOG" 2>&1 || return 1
       record_mutation "$label mode repaired"
     fi
     return 0
   fi
-  cp -f "$generated" "$target" >> "$LOG" 2>&1 || return 1
-  rm -f "$generated"
-  chown "$uid:$uid" "$target" >> "$LOG" 2>&1 || return 1
-  chmod "$mode" "$target" >> "$LOG" 2>&1 || return 1
+  cp -f -- "$generated" "$target" >> "$LOG" 2>&1 || return 1
+  rm -f -- "$generated"
+  chown -- "$uid:$uid" "$target" >> "$LOG" 2>&1 || return 1
+  chmod "$mode" -- "$target" >> "$LOG" 2>&1 || return 1
   restorecon "$target" >> "$LOG" 2>&1 || log "WARN: restorecon failed: $target"
   record_mutation "$label content applied"
 }
@@ -401,7 +406,7 @@ repair_package_data_owner() {
       record_noop "package data ownership already correct: $base"
       continue
     fi
-    if chown -R "$uid:$uid" "$base" >> "$LOG" 2>&1; then
+    if chown -R -- "$uid:$uid" "$base" >> "$LOG" 2>&1; then
       repaired=$((repaired + 1))
       record_mutation "package data ownership repaired: $base uid=$uid first_mismatch=$mismatch"
     else
@@ -416,25 +421,58 @@ repair_package_data_owner() {
 }
 
 cleanup_stale_provider() {
-  pkg_exists "$STALE_PROVIDER_PKG" || { log "stale provider absent: $STALE_PROVIDER_PKG"; return 0; }
+  if ! pkg_exists "$STALE_PROVIDER_PKG"; then
+    record_noop "stale provider absent: $STALE_PROVIDER_PKG"
+    return 0
+  fi
+
+  failed=0
   if ! disable_component "$STALE_PROVIDER_PKG/.TS18DocumentsProvider"; then
     log "WARN: stale provider component could not be disabled; package-level disable will still be attempted"
+    failed=1
   fi
   if ! disable_pkg "$STALE_PROVIDER_PKG"; then
-    log "WARN: stale provider package could not be disabled; per-user uninstall will still be attempted"
+    log "WARN: stale provider package could not be disabled"
+    failed=1
   fi
-  if is_on "$FIX_UNINSTALL_STALE_TS18_PROVIDER_FOR_USER"; then
-    output=$(pm uninstall --user "$TARGET_USER" "$STALE_PROVIDER_PKG" 2>&1)
-    rc=$?
-    echo "$output" >> "$LOG"
-    [ "$rc" -eq 0 ] && log "uninstalled stale provider for user $TARGET_USER" || log "stale provider uninstall not applied rc=$rc"
-  fi
+
   if is_on "$FIX_CLEAR_STALE_TS18_PROVIDER_DATA"; then
-    output=$(pm clear --user "$TARGET_USER" "$STALE_PROVIDER_PKG" 2>&1)
-    rc=$?
-    echo "$output" >> "$LOG"
-    [ "$rc" -eq 0 ] && log "cleared stale provider data" || log "stale provider data clear not applied rc=$rc"
+    if pkg_installed_for_user "$STALE_PROVIDER_PKG"; then
+      output=$(pm clear --user "$TARGET_USER" "$STALE_PROVIDER_PKG" 2>&1)
+      rc=$?
+      echo "$output" >> "$LOG"
+      if [ "$rc" -eq 0 ]; then
+        record_mutation "cleared stale provider data"
+      else
+        log "WARN: stale provider data clear failed rc=$rc"
+        failed=1
+      fi
+    else
+      record_noop "stale provider data already absent for user $TARGET_USER"
+    fi
   fi
+
+  if is_on "$FIX_UNINSTALL_STALE_TS18_PROVIDER_FOR_USER"; then
+    if pkg_installed_for_user "$STALE_PROVIDER_PKG"; then
+      output=$(pm uninstall --user "$TARGET_USER" "$STALE_PROVIDER_PKG" 2>&1)
+      rc=$?
+      echo "$output" >> "$LOG"
+      if [ "$rc" -eq 0 ]; then
+        record_mutation "uninstalled stale provider for user $TARGET_USER"
+      else
+        log "WARN: stale provider uninstall failed rc=$rc"
+        failed=1
+      fi
+    else
+      record_noop "stale provider already uninstalled for user $TARGET_USER"
+    fi
+    if pkg_installed_for_user "$STALE_PROVIDER_PKG"; then
+      log "WARN: stale provider remains installed for user $TARGET_USER"
+      failed=1
+    fi
+  fi
+
+  [ "$failed" -eq 0 ]
 }
 
 clear_picker_preferred_activities() {
@@ -451,11 +489,14 @@ clear_picker_preferred_activities() {
   [ "$rc" -eq 0 ] &&
     record_mutation "cleared preferred activities: $package" ||
     log "WARN: could not clear preferred activities: $package rc=$rc"
+  return "$rc"
 }
 
 cleanup_picker_preferred_migration() {
-  clear_picker_preferred_activities "$APP_MANAGER_PKG"
-  clear_picker_preferred_activities com.google.android.documentsui
+  failed=0
+  clear_picker_preferred_activities "$APP_MANAGER_PKG" || failed=1
+  clear_picker_preferred_activities com.google.android.documentsui || failed=1
+  [ "$failed" -eq 0 ]
 }
 
 prepare_stage_dir() {
@@ -467,14 +508,14 @@ prepare_stage_dir() {
       ;;
   esac
   if [ ! -d "$ROOT_PROVIDER_STAGE_DIR" ]; then
-    mkdir -p "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1 || return 1
+    mkdir -p -- "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1 || return 1
     record_mutation "created root provider staging directory: $ROOT_PROVIDER_STAGE_DIR"
   else
     record_noop "root provider staging directory already exists"
   fi
   stage_mode=$(stat -c '%a' "$ROOT_PROVIDER_STAGE_DIR" 2>/dev/null)
   if [ "$stage_mode" != 777 ]; then
-    if chmod 0777 "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1; then
+    if chmod 0777 -- "$ROOT_PROVIDER_STAGE_DIR" >> "$LOG" 2>&1; then
       record_mutation "root provider staging mode repaired: previous=$stage_mode"
     else
       log "WARN: staging chmod was rejected; shared-storage mediation may still provide access"
@@ -498,7 +539,7 @@ write_root_provider_prefs() {
   prefs_dir=$base/shared_prefs
   prefs_file=$prefs_dir/provider.xml
   generated=$GENERATED_DIR/root-provider.xml
-  mkdir -p "$prefs_dir" 2>/dev/null || { log "ERROR: cannot create root provider prefs"; return 1; }
+  mkdir -p -- "$prefs_dir" 2>/dev/null || { log "ERROR: cannot create root provider prefs"; return 1; }
   ensure_path_owner "$base" "$uid" || return 1
   ensure_path_owner "$prefs_dir" "$uid" || return 1
   cat > "$generated" <<EOPREF
@@ -552,7 +593,7 @@ auto_grant_root() {
 
 install_helper() {
   [ -f "$HELPER_SRC" ] || { log "ERROR: root helper source missing: $HELPER_SRC"; return 1; }
-  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  mkdir -p -- "$STATE_DIR" 2>/dev/null || return 1
   helper_current=0
   if [ -f "$HELPER_DST" ] && cmp -s "$HELPER_SRC" "$HELPER_DST"; then
     owner=$(stat -c '%u:%g' "$HELPER_DST" 2>/dev/null)
@@ -563,10 +604,10 @@ install_helper() {
     record_noop "root helper already current: $HELPER_DST"
     return 0
   fi
-  cp -f "$HELPER_SRC" "$HELPER_DST" >> "$LOG" 2>&1 || return 1
-  chown 0:0 "$HELPER_DST" >> "$LOG" 2>&1 ||
+  cp -f -- "$HELPER_SRC" "$HELPER_DST" >> "$LOG" 2>&1 || return 1
+  chown -- 0:0 "$HELPER_DST" >> "$LOG" 2>&1 ||
     log "WARN: helper ownership repair failed"
-  if ! chmod 0755 "$HELPER_DST" >> "$LOG" 2>&1; then
+  if ! chmod 0755 -- "$HELPER_DST" >> "$LOG" 2>&1; then
     log "ERROR: helper executable mode could not be set"
     return 1
   fi
@@ -621,17 +662,18 @@ EOPREF
   template=$generated
   applied=0
   for base in "/data/user/$TARGET_USER/com.android.documentsui" "/data/data/com.android.documentsui"; do
-    mkdir -p "$base/shared_prefs" 2>/dev/null || continue
+    mkdir -p -- "$base/shared_prefs" 2>/dev/null || continue
     ensure_path_owner "$base" "$uid" || return 1
     ensure_path_owner "$base/shared_prefs" "$uid" || return 1
     for name in com.android.documentsui_preferences.xml com.android.documentsui.xml DocumentsUI.xml; do
       generated=$GENERATED_DIR/$name
-      cp -f "$template" "$generated" || return 1
-      install_if_changed "$generated" "$base/shared_prefs/$name" "$uid" 600         "DocumentsUI preferences $base/$name" || return 1
+      cp -f -- "$template" "$generated" || return 1
+      install_if_changed "$generated" "$base/shared_prefs/$name" "$uid" 600 \
+        "DocumentsUI preferences $base/$name" || return 1
       applied=$((applied + 1))
     done
   done
-  rm -f "$template"
+  rm -f -- "$template"
   log "DocumentsUI action-scoped internal roots visible=$show uid=$uid files=$applied"
 }
 
@@ -885,7 +927,7 @@ fi
 
 if is_on "$FIX_CREATE_STANDARD_INTERNAL_DIRS"; then
   for directory in Download Documents Music Movies Pictures DCIM Alarms Audiobooks Notifications Podcasts Ringtones; do
-    if ! mkdir -p "/storage/emulated/0/$directory" >> "$LOG" 2>&1; then
+    if ! mkdir -p -- "/storage/emulated/0/$directory" >> "$LOG" 2>&1; then
       log "WARN: optional standard shared-storage directory could not be created: $directory"
     fi
   done
@@ -926,10 +968,11 @@ fi
 refresh_picker_once "$external_show"
 
 if is_on "$FIX_WARM_UP_PROVIDERS"; then
+  # Warm only stock providers. Starting the custom provider before the final app storage
+  # namespace settles can preserve a stale namespace and is not required for queryRoots().
   for warmup_uri in \
     content://com.android.providers.downloads.documents/root \
-    content://com.android.externalstorage.documents/root \
-    content://$ROOT_AUTH/root; do
+    content://com.android.externalstorage.documents/root; do
     if ! run_bounded_sh 8 "content query --uri '$warmup_uri' --user '$TARGET_USER'" >> "$LOG" 2>&1; then
       log "WARN: optional provider warm-up did not complete: $warmup_uri"
     fi
@@ -942,8 +985,8 @@ if is_on "$FIX_VERIFY_PICKER_RESOLVER"; then
   fi
 fi
 
-if is_on "$DIAG_AUTO_RUN_ON_BOOT" && [ -x "$MODDIR/tools/ts18-saf-deepdiag.sh" ]; then
-  if ! sh "$MODDIR/tools/ts18-saf-deepdiag.sh" boot >> "$LOG" 2>&1; then
+if is_on "$DIAG_AUTO_RUN_ON_BOOT" && [ -x "$MODDIR/tools/ts18-saf-evidence-v2.sh" ]; then
+  if ! sh "$MODDIR/tools/ts18-saf-evidence-v2.sh" boot >> "$LOG" 2>&1; then
     # Diagnostics are optional evidence collection and must not invalidate picker repair.
     log "WARN: optional boot diagnostics failed"
   fi
