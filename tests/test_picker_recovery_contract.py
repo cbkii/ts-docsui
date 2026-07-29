@@ -139,7 +139,7 @@ class PickerRecoveryContractTests(unittest.TestCase):
     def test_destructive_repairs_are_one_time_or_mismatch_gated(self) -> None:
         service = self.read("module/service.sh")
         owner = self.method_body(service, "repair_package_data_owner()")
-        self.assertLess(owner.index("mismatch=$(find"), owner.index('chown -R "$uid:$uid"'))
+        self.assertLess(owner.index("mismatch=$(find"), owner.index('chown -R -- "$uid:$uid"'))
         self.assertIn("run_migration_once stale-provider-v121", service)
         self.assertIn("run_migration_once picker-preferred-v121", service)
         self.assertEqual(
@@ -147,6 +147,36 @@ class PickerRecoveryContractTests(unittest.TestCase):
             service.count("repair_package_data_owner com.android.documentsui"),
             "DocumentsUI ownership must not receive a duplicate recursive pass",
         )
+
+    def test_stale_provider_migration_retries_incomplete_cleanup(self) -> None:
+        service = self.read("module/service.sh")
+        body = self.method_body(service, "cleanup_stale_provider()")
+        self.assertIn("failed=0", body)
+        self.assertIn("failed=1", body)
+        self.assertIn('pkg_installed_for_user "$STALE_PROVIDER_PKG"', body)
+        self.assertIn('record_mutation "cleared stale provider data', body)
+        self.assertIn('record_mutation "uninstalled stale provider', body)
+        self.assertIn('[ "$failed" -eq 0 ]', body)
+        self.assertLess(body.index("pm clear --user"), body.index("pm uninstall --user"))
+
+    def test_preferred_activity_migration_aggregates_failures(self) -> None:
+        service = self.read("module/service.sh")
+        body = self.method_body(service, "cleanup_picker_preferred_migration()")
+        self.assertIn("failed=0", body)
+        self.assertEqual(body.count("|| failed=1"), 2)
+        self.assertIn('[ "$failed" -eq 0 ]', body)
+
+    def test_changed_file_operations_guard_variable_paths(self) -> None:
+        service = self.read("module/service.sh")
+        body = self.method_body(service, "install_if_changed()")
+        for marker in (
+            'rm -f -- "$generated"',
+            'cp -f -- "$generated" "$target"',
+            'chown -- "$uid:$uid" "$target"',
+            'chmod "$mode" -- "$target"',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, body)
 
     def test_root_provider_failure_does_not_mutate_stock_external_provider(self) -> None:
         service = self.read("module/service.sh")
@@ -204,6 +234,21 @@ class PickerRecoveryContractTests(unittest.TestCase):
                 "module/tools/ts18-saf-evidence-remount.sh",
             )
         )
+
+    def test_legacy_diagnostic_entrypoint_delegates_to_v2(self) -> None:
+        legacy = self.read("module/tools/ts18-saf-deepdiag.sh")
+        self.assertIn("ts18-saf-evidence-v2.sh", legacy)
+        self.assertIn('exec sh "$COLLECTOR" "$MODE"', legacy)
+        self.assertNotIn("RUN_ID=ts18-docsui-v", legacy)
+
+    def test_custom_provider_is_not_warmed_during_boot(self) -> None:
+        service = self.read("module/service.sh")
+        start = service.index('if is_on "$FIX_WARM_UP_PROVIDERS"')
+        end = service.index('if is_on "$FIX_VERIFY_PICKER_RESOLVER"', start)
+        warmup = service[start:end]
+        self.assertIn("com.android.providers.downloads.documents", warmup)
+        self.assertIn("com.android.externalstorage.documents", warmup)
+        self.assertNotIn("$ROOT_AUTH", warmup)
 
     def test_evidence_collector_is_private_first_bounded_and_version_agnostic(self) -> None:
         diagnostic = self.evidence_collector_source()
