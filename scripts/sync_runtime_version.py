@@ -40,13 +40,6 @@ def synced_text(path: Path, text: str, version: str, version_code: str) -> str:
             "service heading",
         )
         return text
-    if path.as_posix().endswith("module/tools/ts18-saf-deepdiag.sh"):
-        return substitute_once(
-            text,
-            r"^RUN_ID=ts18-docsui-v[0-9]+-\$\{MODE\}-\$\{TS\}$",
-            f"RUN_ID=ts18-docsui-v{version_code}-${{MODE}}-${{TS}}",
-            "diagnostic run ID",
-        )
     raise ValueError(f"Unsupported runtime file: {path}")
 
 
@@ -70,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("module versionCode must be numeric")
 
         changed: list[str] = []
-        for relative in ("module/service.sh", "module/tools/ts18-saf-deepdiag.sh"):
+        for relative in ("module/service.sh",):
             path = repo / relative
             original = path.read_text(encoding="utf-8", errors="strict")
             updated = synced_text(path, original, version, version_code)
