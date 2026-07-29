@@ -62,6 +62,7 @@ jobs:
           python3 scripts/build-root-provider.py --repo-root . --gradle gradle --timeout 900 2>&1 | tee .build/root-provider-build.log
 
       - name: Upload provider build evidence
+        id: provider_evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -138,6 +139,7 @@ jobs:
           (cd dist && sha256sum -c "$(basename '${{ steps.module.outputs.sha256_path }}')")
 
       - name: Upload installable module
+        id: installable_module
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.module.outputs.zip_name }}
@@ -146,3 +148,26 @@ jobs:
             ${{ steps.module.outputs.sha256_path }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Write artifact summary
+        if: ${{ always() }}
+        env:
+          PROVIDER_EVIDENCE_URL: ${{ steps.provider_evidence.outputs.artifact-url }}
+          MODULE_URL: ${{ steps.installable_module.outputs.artifact-url }}
+          MODULE_NAME: ${{ steps.module.outputs.zip_name }}
+        run: |
+          {
+            echo '## TS18 Full File Picker artifacts'
+            echo
+            echo '| Artifact | Download | Contents |'
+            echo '|---|---|---|'
+            if [[ -n "${MODULE_URL}" ]]; then
+              echo "| Installable module (${MODULE_NAME}) | [Download](${MODULE_URL}) | Magisk ZIP and SHA-256 |"
+            fi
+            if [[ -n "${PROVIDER_EVIDENCE_URL}" ]]; then
+              echo "| Root-provider build evidence | [Download](${PROVIDER_EVIDENCE_URL}) | Complete build log and lint reports |"
+            fi
+            if [[ -z "${MODULE_URL}${PROVIDER_EVIDENCE_URL}" ]]; then
+              echo '| None | No artifact was generated | Inspect the failed step above |'
+            fi
+          } >>"${GITHUB_STEP_SUMMARY}"
