@@ -6,6 +6,7 @@ name: Validate TS18 file picker module
       - main
       - 'fix/**'
       - 'feature/**'
+      - 'feat/**'
   pull_request:
   workflow_dispatch:
 
@@ -127,10 +128,21 @@ jobs:
                   'system/priv-app/DocumentsUI/DocumentsUI.apk',
                   'system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk',
                   'tools/rootfs-helper.sh',
+                  'tools/ts18-saf-evidence-v2.sh',
+                  'tools/ts18-saf-evidence-common.sh',
+                  'tools/ts18-saf-evidence-remount.sh',
               }
               missing = required - names
               if missing:
                   raise SystemExit(f'missing ZIP entries: {sorted(missing)}')
+              forbidden = {
+                  'system/etc/sysconfig/ts18-documentsui-saf.xml',
+                  'system/priv-app/ExternalStorageProvider/ExternalStorageProvider.apk',
+                  'system/priv-app/TS18LocalDocumentsProvider/TS18LocalDocumentsProvider.apk',
+              }
+              present = forbidden & names
+              if present:
+                  raise SystemExit(f'forbidden ZIP entries: {sorted(present)}')
               compressed = [info.filename for info in archive.infolist() if info.compress_type != zipfile.ZIP_STORED]
               if compressed:
                   raise SystemExit(f'non-STORE entries: {compressed[:10]}')
