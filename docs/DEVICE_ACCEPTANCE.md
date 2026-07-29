@@ -16,7 +16,7 @@ Do not change firmware, MCU, CAN, LCD, boot, logo or read-only partitions during
 Run from a root Termux shell or Magisk Action:
 
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh MODE'
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh MODE'
 ```
 
 Replace `MODE` with the stage name below. Replace `com.tw.media` with the exact client package being tested. The collector is package-version agnostic and records the live package identity.
@@ -32,7 +32,7 @@ Verified archives are written to:
 Before installing or updating the module:
 
 ```sh
-su -c '/data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh baseline'
+su -c '/data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh baseline'
 ```
 
 When the module is not yet installed, preserve equivalent package, provider, AppOps, logcat and mount evidence using the prior installed module or a root diagnostic shell.
@@ -46,7 +46,7 @@ When the module is not yet installed, preserve equivalent package, provider, App
 5. Run:
 
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh boot1'
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh boot1'
 ```
 
 Expected:
@@ -64,7 +64,7 @@ Expected:
 3. Run:
 
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh boot2'
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh boot2'
 ```
 
 Expected:
@@ -91,9 +91,9 @@ Use the real client app and test separately:
 Capture before opening the picker and immediately after the result returns:
 
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh before-picker'
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh before-picker'
 # perform one picker action
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh after-picker'
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh after-picker'
 ```
 
 Record the exact action, selected URI and whether the client could read or write through that URI.
@@ -115,10 +115,10 @@ The client must call `takePersistableUriPermission`; picker display alone is not
 Commands:
 
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh after-grant'
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh after-client-restart'
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh after-grant-reboot'
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh after-grant-acc'
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh after-grant'
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh after-client-restart'
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh after-grant-reboot'
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh after-grant-acc'
 ```
 
 The diagnostic bundle records system URI-grant state, but the client must also prove real access.
@@ -138,7 +138,7 @@ Expected: DocumentsUI and stock `primary:` still work.
 Enable the provider, deny its Magisk request and capture:
 
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-deepdiag.sh root-denied'
+su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh root-denied'
 ```
 
 Expected:
