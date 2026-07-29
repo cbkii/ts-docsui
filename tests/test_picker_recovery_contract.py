@@ -75,7 +75,7 @@ class PickerRecoveryContractTests(unittest.TestCase):
         )
         self.assertIn('throw fileNotFound("Open failed", e)', body)
 
-    def test_service_repairs_known_v101_launch_breakages(self) -> None:
+    def test_service_repairs_known_launch_breakages(self) -> None:
         service = self.read("module/service.sh")
         required = (
             "repair_package_data_owner com.android.documentsui",
@@ -171,19 +171,133 @@ class PickerRecoveryContractTests(unittest.TestCase):
         self.assertIn("EXTERNAL_ROOT_MODE=show", installer)
         self.assertNotIn("EXTERNAL_ROOT_MODE=auto/' \"$merged\"", installer)
 
-    def test_sysconfig_declares_all_picker_entrypoints(self) -> None:
-        sysconfig = self.read("module/system/etc/sysconfig/ts18-documentsui-saf.xml")
-        expected = (
-            "com.android.documentsui.picker.PickActivity",
-            "com.android.documentsui.files.FilesActivity",
-            "com.android.documentsui.files.LauncherActivity",
-            "com.android.documentsui.LauncherActivity",
-            "com.android.documentsui.ViewDownloadsActivity",
-            "com.android.documentsui.ScopedAccessActivity",
+    def test_unsupported_component_override_sysconfig_is_not_packaged(self) -> None:
+        unsupported = REPO_ROOT / "module/system/etc/sysconfig/ts18-documentsui-saf.xml"
+        self.assertFalse(
+            unsupported.exists(),
+            "exact-device SystemConfig rejects the component-override tag; runtime pm reconciliation is authoritative",
         )
-        for component in expected:
+        module_files = "\n".join(
+            str(path.relative_to(REPO_ROOT)) for path in (REPO_ROOT / "module").rglob("*") if path.is_file()
+        )
+        self.assertNotIn("ts18-documentsui-saf.xml", module_files)
+
+    def test_documentsui_entrypoints_are_runtime_reconciled(self) -> None:
+        service = self.read("module/service.sh")
+        for component in (
+            "com.android.documentsui/.picker.PickActivity",
+            "com.android.documentsui/.files.FilesActivity",
+            "com.android.documentsui/.files.LauncherActivity",
+            "com.android.documentsui/.LauncherActivity",
+            "com.android.documentsui/.ViewDownloadsActivity",
+            "com.android.documentsui/.ScopedAccessActivity",
+        ):
             with self.subTest(component=component):
-                self.assertIn(component, sysconfig)
+                self.assertIn(component, service)
+
+    def evidence_collector_source(self) -> str:
+        return "\n".join(
+            self.read(path)
+            for path in (
+                "module/tools/ts18-saf-evidence-v2.sh",
+                "module/tools/ts18-saf-evidence-common.sh",
+                "module/tools/ts18-saf-evidence-remount.sh",
+            )
+        )
+
+    def test_evidence_collector_is_private_first_bounded_and_version_agnostic(self) -> None:
+        diagnostic = self.evidence_collector_source()
+        self.assertIn("PRIVATE_BASE=$STATE_DIR/diagnostics", diagnostic)
+        self.assertIn("MODULE_PROP=$MODULE_DIR/module.prop", diagnostic)
+        self.assertIn("VERSION=$(sed -n 's/^version=//p'", diagnostic)
+        self.assertIn("VERSION_CODE=$(sed -n 's/^versionCode=//p'", diagnostic)
+        self.assertIn("[skipped: timeout unavailable]", diagnostic)
+        self.assertNotIn('"$@" >> "$file"', diagnostic)
+        self.assertIn("Do not write into WORK after this point", diagnostic)
+        self.assertIn("tar -tzf \"$ARCHIVE\"", diagnostic)
+
+    def test_evidence_collector_captures_package_identity_and_lifecycle_diff(self) -> None:
+        diagnostic = self.evidence_collector_source()
+        required = (
+            "package-stack.tsv",
+            "last-package-stack.tsv",
+            "package-stack-diff.txt",
+            "versionCode",
+            "versionName",
+            "apkPaths",
+            "SHA256SUMS.txt",
+            "com.ts18.safprovider",
+            "com.mixplorer.silver",
+        )
+        for marker in required:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, diagnostic)
+
+    def test_evidence_collector_structures_remount_and_appops_evidence(self) -> None:
+        diagnostic = self.evidence_collector_source()
+        required = (
+            "remount-provider-events.tsv",
+            "remount-provider-summary.txt",
+            "remountUidExternalStorage",
+            "AppOpsService.*notifyOpChanged",
+            "peak_events_per_second",
+            "REMOUNT_STORM_TOTAL_THRESHOLD",
+            "REMOUNT_STORM_RATE_THRESHOLD",
+            "capture_system_server_stack",
+        )
+        for marker in required:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, diagnostic)
+
+    def test_evidence_collector_captures_provider_process_mount_namespaces(self) -> None:
+        diagnostic = self.evidence_collector_source()
+        self.assertIn("capture_process_namespace com.android.documentsui", diagnostic)
+        self.assertIn("capture_process_namespace com.android.externalstorage", diagnostic)
+        self.assertIn('capture_process_namespace "$ROOT_PKG"', diagnostic)
+        self.assertIn('/proc/$pid/mountinfo', diagnostic)
+        self.assertIn('/proc/$pid/root/mnt/runtime/full/emulated/0', diagnostic)
+
+    def test_evidence_collector_reports_functional_provider_health_and_uri_grants(self) -> None:
+        diagnostic = self.evidence_collector_source()
+        self.assertIn("probe_content_uri stock-primary-children", diagnostic)
+        self.assertIn("probe_content_uri root-provider-roots", diagnostic)
+        self.assertIn("stock_provider_health=", diagnostic)
+        self.assertIn("root_provider_health=", diagnostic)
+        self.assertIn("takePersistableUriPermission", diagnostic)
+        self.assertIn("TS18_SAF_CLIENT_PACKAGE", diagnostic)
+
+    def test_evidence_collector_enforces_settled_boot_and_sysconfig_warning_gates(self) -> None:
+        diagnostic = self.evidence_collector_source()
+        self.assertIn("boot2|settled", diagnostic)
+        self.assertIn("expected zero reconciliation mutations", diagnostic)
+        self.assertIn("component-override.*unknown", diagnostic)
+        self.assertIn("unsupported-sysconfig-events.txt", diagnostic)
+
+    def test_physical_acceptance_runbook_covers_required_boundaries(self) -> None:
+        runbook = self.read("docs/DEVICE_ACCEPTANCE.md")
+        for marker in (
+            "migration boot",
+            "settled second boot",
+            "persisted URI grant",
+            "root-provider isolation",
+            "USB lifecycle",
+            "rollback",
+            "ACC sleep/wake",
+            "remount storm",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker.lower(), runbook.lower())
+
+    def test_action_prefers_v2_collector_and_keeps_legacy_fallback(self) -> None:
+        action = self.read("module/action.sh")
+        self.assertIn("ts18-saf-evidence-v2.sh", action)
+        self.assertIn("ts18-saf-deepdiag.sh", action)
+        self.assertLess(action.index("ts18-saf-evidence-v2.sh"), action.index("ts18-saf-deepdiag.sh"))
+
+    def test_acceptance_commands_use_v2_collector(self) -> None:
+        runbook = self.read("docs/DEVICE_ACCEPTANCE.md")
+        self.assertIn("ts18-saf-evidence-v2.sh", runbook)
+        self.assertNotIn("ts18-saf-deepdiag.sh", runbook)
 
     def test_manual_launcher_uses_explicit_documentsui_component(self) -> None:
         launcher = self.read("module/tools/ts18-saf-launch.sh")
