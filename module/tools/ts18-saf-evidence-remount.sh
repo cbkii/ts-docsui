@@ -7,7 +7,7 @@ analyse_remount_events() {
   grouped=$WORK/logs/remount-provider-summary.txt
   uidmap=$WORK/packages/uid-packages.tsv
   : > "$structured"
-  printf 'timestamp\tevent_type\tphase\tuid\tmode\tpackages\traw\n' >> "$structured"
+  printf 'timestamp\tsecond_bucket\tevent_type\tphase\tuid\tmode\tpackages\traw\n' >> "$structured"
 
   if ! awk -F '\t' '$2 ~ /^[0-9]+$/ { map[$2] = (map[$2] ? map[$2] "," $1 : $1) } END { for (uid in map) print uid "\t" map[uid] }' \
     "$WORK/packages/package-stack.tsv" > "$uidmap" 2>/dev/null; then
@@ -27,6 +27,9 @@ analyse_remount_events() {
     {
       raw=$0
       timestamp=$1 " " $2
+      second=$2
+      sub(/\..*$/, "", second)
+      second_bucket=$1 " " second
       lower=tolower(raw)
       event_type="context"
       if (lower ~ /remountuidexternalstorage|remount.*external/) event_type="remount"
@@ -48,22 +51,22 @@ analyse_remount_events() {
       }
       packages=(uid in pkg ? pkg[uid] : "unknown")
       gsub(/\t/, " ", raw)
-      print timestamp "\t" event_type "\t" phase "\t" uid "\t" mode "\t" packages "\t" raw
+      print timestamp "\t" second_bucket "\t" event_type "\t" phase "\t" uid "\t" mode "\t" packages "\t" raw
     }
   ' "$raw" >> "$structured" 2>/dev/null; then
     # Keep the raw log when an OEM-specific line cannot be parsed.
     warn 'structured remount parsing failed; raw remount evidence is still included'
   fi
 
-  total=$(awk -F '\t' 'NR > 1 && $2 == "remount" {count++} END {print count+0}' "$structured" 2>/dev/null)
-  starts=$(awk -F '\t' 'NR > 1 && $2 == "remount" && $3 == "start" {count++} END {print count+0}' "$structured" 2>/dev/null)
-  ends=$(awk -F '\t' 'NR > 1 && $2 == "remount" && $3 == "end" {count++} END {print count+0}' "$structured" 2>/dev/null)
-  appops=$(awk -F '\t' 'NR > 1 && $2 == "appops" {count++} END {print count+0}' "$structured" 2>/dev/null)
-  seconds=$(awk -F '\t' 'NR > 1 && $2 == "remount" {seen[$1]=1} END {for (x in seen) count++; print count+0}' "$structured" 2>/dev/null)
-  peak=$(awk -F '\t' 'NR > 1 && $2 == "remount" {count[$1]++} END {max=0; for (x in count) if (count[x] > max) max=count[x]; print max+0}' "$structured" 2>/dev/null)
+  total=$(awk -F '\t' 'NR > 1 && $3 == "remount" {count++} END {print count+0}' "$structured" 2>/dev/null)
+  starts=$(awk -F '\t' 'NR > 1 && $3 == "remount" && $4 == "start" {count++} END {print count+0}' "$structured" 2>/dev/null)
+  ends=$(awk -F '\t' 'NR > 1 && $3 == "remount" && $4 == "end" {count++} END {print count+0}' "$structured" 2>/dev/null)
+  appops=$(awk -F '\t' 'NR > 1 && $3 == "appops" {count++} END {print count+0}' "$structured" 2>/dev/null)
+  seconds=$(awk -F '\t' 'NR > 1 && $3 == "remount" {seen[$2]=1} END {for (x in seen) count++; print count+0}' "$structured" 2>/dev/null)
+  peak=$(awk -F '\t' 'NR > 1 && $3 == "remount" {count[$2]++} END {max=0; for (x in count) if (count[x] > max) max=count[x]; print max+0}' "$structured" 2>/dev/null)
   average=$(awk -v total="$total" -v seconds="$seconds" 'BEGIN {if (seconds > 0) printf "%.2f", total/seconds; else print "0.00"}')
-  first=$(awk -F '\t' 'NR > 1 && $2 == "remount" {print $1; exit}' "$structured" 2>/dev/null)
-  last=$(awk -F '\t' 'NR > 1 && $2 == "remount" {value=$1} END {print value}' "$structured" 2>/dev/null)
+  first=$(awk -F '\t' 'NR > 1 && $3 == "remount" {print $1; exit}' "$structured" 2>/dev/null)
+  last=$(awk -F '\t' 'NR > 1 && $3 == "remount" {value=$1} END {print value}' "$structured" 2>/dev/null)
   unmatched=$(awk -v starts="$starts" -v ends="$ends" 'BEGIN {delta=starts-ends; if (delta < 0) delta=-delta; print delta}')
 
   {
@@ -78,7 +81,7 @@ analyse_remount_events() {
     printf 'first_remount_event=%s\n' "${first:-none}"
     printf 'last_remount_event=%s\n' "${last:-none}"
     printf '\n-- grouped by type/uid/package/mode/phase --\n'
-    awk -F '\t' 'NR > 1 {key=$2 "\t" $4 "\t" $6 "\t" $5 "\t" $3; count[key]++} END {for (key in count) print count[key] "\t" key}' "$structured" | sort -nr
+    awk -F '\t' 'NR > 1 {key=$3 "\t" $5 "\t" $7 "\t" $6 "\t" $4; count[key]++} END {for (key in count) print count[key] "\t" key}' "$structured" | sort -nr
   } > "$grouped"
 
   REMOUNT_EVENT_COUNT=$total
