@@ -136,7 +136,7 @@ class PickerRecoveryContractTests(unittest.TestCase):
     def test_destructive_repairs_are_one_time_or_mismatch_gated(self) -> None:
         service = self.read("module/service.sh")
         owner = self.method_body(service, "repair_package_data_owner()")
-        self.assertLess(owner.index("first_mismatch"), owner.index('chown -R "$uid:$uid"'))
+        self.assertLess(owner.index("mismatch=$(find"), owner.index('chown -R "$uid:$uid"'))
         self.assertIn("run_migration_once stale-provider-v121", service)
         self.assertIn("run_migration_once picker-preferred-v121", service)
         self.assertEqual(
