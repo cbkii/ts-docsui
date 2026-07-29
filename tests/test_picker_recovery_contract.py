@@ -127,6 +127,9 @@ class PickerRecoveryContractTests(unittest.TestCase):
             'record_noop "permission already granted',
             'record_noop "app-op already allowed',
             'cmp -s "$generated" "$target"',
+            'record_noop "root helper already current',
+            'record_noop "Magisk root policy already granted',
+            'record_noop "root provider staging mode already current',
             'reconcile summary mutations=$MUTATION_COUNT noops=$NOOP_COUNT',
         )
         for marker in required:
