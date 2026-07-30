@@ -18,29 +18,57 @@ SPEC.loader.exec_module(MODULE)
 
 
 class BuildRootProviderTests(unittest.TestCase):
-    def test_signer_digest_accepts_apksigner_output_on_stderr(self) -> None:
+    def make_apksigner(self, root: Path, output: str, *, status: int = 0) -> Path:
+        apksigner = root / "apksigner"
+        escaped = output.replace("'", "'\\''")
+        apksigner.write_text(
+            f"#!/bin/sh\nprintf '%s' '{escaped}' >&2\nexit {status}\n",
+            encoding="utf-8",
+        )
+        apksigner.chmod(0o755)
+        return apksigner
+
+    def test_signer_digest_accepts_scheme_labelled_output_on_stderr(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            apksigner = root / "apksigner"
-            apksigner.write_text(
-                "#!/bin/sh\n"
-                "printf '  Signer #1 certificate SHA-256 digest: AABBCCDD\\r\\n' >&2\n",
-                encoding="utf-8",
+            apksigner = self.make_apksigner(
+                root,
+                "V2 Signer: certificate DN: CN=TS18 Root Provider\r\n"
+                "V2 Signer: certificate SHA-256 digest: AABBCCDD\r\n",
             )
-            apksigner.chmod(0o755)
             apk = root / "provider.apk"
             apk.write_bytes(b"fixture")
             self.assertEqual(MODULE.signer_digest(str(apksigner), apk), "aabbccdd")
 
+    def test_signer_digest_accepts_same_digest_across_signature_schemes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            apksigner = self.make_apksigner(
+                root,
+                "V1 Signer: certificate SHA-256 digest: AABBCCDD\n"
+                "V2 Signer: certificate SHA-256 digest: AABBCCDD\n",
+            )
+            apk = root / "provider.apk"
+            apk.write_bytes(b"fixture")
+            self.assertEqual(MODULE.signer_digest(str(apksigner), apk), "aabbccdd")
+
+    def test_signer_digest_rejects_multiple_distinct_signers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            apksigner = self.make_apksigner(
+                root,
+                "V1 Signer: certificate SHA-256 digest: AABBCCDD\n"
+                "V2 Signer: certificate SHA-256 digest: 11223344\n",
+            )
+            apk = root / "provider.apk"
+            apk.write_bytes(b"fixture")
+            with self.assertRaisesRegex(RuntimeError, "multiple signer"):
+                MODULE.signer_digest(str(apksigner), apk)
+
     def test_signer_digest_failure_preserves_bounded_tool_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            apksigner = root / "apksigner"
-            apksigner.write_text(
-                "#!/bin/sh\nprintf 'certificate output unavailable\\n' >&2\n",
-                encoding="utf-8",
-            )
-            apksigner.chmod(0o755)
+            apksigner = self.make_apksigner(root, "certificate output unavailable\n")
             apk = root / "provider.apk"
             apk.write_bytes(b"fixture")
             with self.assertRaisesRegex(RuntimeError, "certificate output unavailable"):
