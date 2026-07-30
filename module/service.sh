@@ -94,7 +94,10 @@ set_cfg() {
 }
 
 load_cfg() {
-  [ -f "$CFG" ] || cp -f "$MODDIR/config.default" "$CFG" 2>/dev/null || return 0
+  if [ ! -f "$CFG" ]; then
+    cp -f "$MODDIR/config.default" "$CFG" 2>/dev/null || return 0
+    chmod 0644 "$CFG" 2>/dev/null || log "WARN: config mode repair failed"
+  fi
   while IFS='=' read -r key value || [ -n "$key" ]; do
     case "$key" in ''|'#'*) continue;; esac
     case "$value" in *[!A-Za-z0-9_./:-]*) continue;; esac
@@ -103,6 +106,7 @@ load_cfg() {
 }
 
 pkg_exists() { pm path "$1" >/dev/null 2>&1; }
+pkg_installed() { pm list packages --user "$USER_ID" "$1" 2>/dev/null | grep -Fxq "package:$1"; }
 pkg_enabled() { pm list packages -e --user "$USER_ID" "$1" 2>/dev/null | grep -Fxq "package:$1"; }
 pkg_disabled() { pm list packages -d --user "$USER_ID" "$1" 2>/dev/null | grep -Fxq "package:$1"; }
 
@@ -133,7 +137,13 @@ enable_pkg() {
   pkg=$1
   pkg_exists "$pkg" || { log "ERROR: package absent: $pkg"; return 1; }
   pkg_enabled "$pkg" && { noop "package enabled: $pkg"; return 0; }
-  pm install-existing --user "$USER_ID" "$pkg" >>"$LOG" 2>&1 || :
+  if ! pkg_installed "$pkg"; then
+    pm install-existing --user "$USER_ID" "$pkg" >>"$LOG" 2>&1 || {
+      log "ERROR: install-existing failed: $pkg"
+      return 1
+    }
+    mut "installed existing package: $pkg"
+  fi
   pm enable --user "$USER_ID" "$pkg" >>"$LOG" 2>&1 || { log "ERROR: enable package failed: $pkg"; return 1; }
   mut "enabled package: $pkg"
 }
@@ -173,12 +183,67 @@ set_appop() {
   appops set --user "$USER_ID" "$pkg" "$op" allow >>"$LOG" 2>&1 && mut "allowed app-op: $pkg $op"
 }
 
+ensure_dir_meta() {
+  path=$1 uid=$2 mode=$3 label=$4
+  changed=0
+  if [ -d "$path" ]; then
+    noop "$label directory present"
+  else
+    mkdir -p "$path" || return 1
+    changed=1
+    mut "$label directory created"
+  fi
+  owner=$(stat -c '%u:%g' "$path" 2>/dev/null) || return 1
+  if [ "$owner" = "$uid:$uid" ]; then
+    noop "$label directory owner current"
+  else
+    chown -- "$uid:$uid" "$path" 2>/dev/null || return 1
+    changed=1
+    mut "$label directory owner repaired"
+  fi
+  current_mode=$(stat -c '%a' "$path" 2>/dev/null) || return 1
+  if [ "$current_mode" = "$mode" ]; then
+    noop "$label directory mode current"
+  else
+    chmod "$mode" -- "$path" 2>/dev/null || return 1
+    changed=1
+    mut "$label directory mode repaired"
+  fi
+  [ "$changed" -eq 0 ] || restorecon "$path" >/dev/null 2>&1 || log "WARN: restorecon failed: $path"
+}
+
 install_changed() {
   source=$1 target=$2 uid=$3 mode=$4 label=$5
-  if [ -f "$target" ] && cmp -s "$source" "$target"; then rm -f "$source"; noop "$label current"; else cp -f "$source" "$target" || return 1; rm -f "$source"; mut "$label updated"; fi
-  chown "$uid:$uid" "$target" 2>/dev/null || return 1
-  chmod "$mode" "$target" 2>/dev/null || return 1
-  restorecon "$target" >/dev/null 2>&1 || :
+  changed=0
+  if [ -f "$target" ] && cmp -s "$source" "$target"; then
+    rm -f -- "$source" || return 1
+    noop "$label content current"
+  else
+    cp -f -- "$source" "$target" || return 1
+    rm -f -- "$source" || return 1
+    changed=1
+    mut "$label content updated"
+  fi
+
+  owner=$(stat -c '%u:%g' "$target" 2>/dev/null) || return 1
+  if [ "$owner" = "$uid:$uid" ]; then
+    noop "$label owner current"
+  else
+    chown -- "$uid:$uid" "$target" 2>/dev/null || return 1
+    changed=1
+    mut "$label owner repaired"
+  fi
+
+  current_mode=$(stat -c '%a' "$target" 2>/dev/null) || return 1
+  if [ "$current_mode" = "$mode" ]; then
+    noop "$label mode current"
+  else
+    chmod "$mode" -- "$target" 2>/dev/null || return 1
+    changed=1
+    mut "$label mode repaired"
+  fi
+
+  [ "$changed" -eq 0 ] || restorecon "$target" >/dev/null 2>&1 || log "WARN: restorecon failed: $target"
 }
 
 repair_owner() {
@@ -188,7 +253,7 @@ repair_owner() {
     [ -d "$base" ] || continue
     mismatch=$(find "$base" -xdev \( ! -user "$uid" -o ! -group "$uid" \) -print -quit 2>/dev/null)
     [ -n "$mismatch" ] || { noop "ownership current: $base"; continue; }
-    chown -R "$uid:$uid" "$base" >>"$LOG" 2>&1 || return 1
+    chown -R -- "$uid:$uid" "$base" >>"$LOG" 2>&1 || return 1
     restorecon -RF "$base" >>"$LOG" 2>&1 || :
     mut "ownership repaired: $base"
   done
@@ -199,7 +264,8 @@ bool() { on "$1" && echo true || echo false; }
 write_root_prefs() {
   uid=$(pkg_uid "$ROOT_PKG"); case "$uid" in ''|*[!0-9]*) return 1;; esac
   base=/data/user/$USER_ID/$ROOT_PKG/shared_prefs
-  mkdir -p "$base" "$GEN" || return 1
+  mkdir -p "$GEN" || return 1
+  ensure_dir_meta "$base" "$uid" 771 "root-provider shared_prefs" || return 1
   file=$GEN/root-provider.xml
   cat >"$file" <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
@@ -222,30 +288,54 @@ write_documentsui_prefs() {
   show=$1 uid=$(pkg_uid com.android.documentsui); case "$uid" in ''|*[!0-9]*) return 1;; esac
   [ "$show" = 1 ] && value=true || value=false
   base=/data/user/$USER_ID/com.android.documentsui/shared_prefs
-  mkdir -p "$base" "$GEN" || return 1
+  mkdir -p "$GEN" || return 1
+  ensure_dir_meta "$base" "$uid" 771 "DocumentsUI shared_prefs" || return 1
   template=$GEN/documentsui.xml
   {
     echo "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>"; echo '<map>'
     for key in includeDeviceRoot includeDeviceRoot-1 includeDeviceRoot-2 includeDeviceRoot-3 includeDeviceRoot-4 includeDeviceRoot-5 includeDeviceRoot-6 includeDeviceRoot-7 includeDeviceRoot-8 showAdvanced advancedDevices showDeviceStorageOption; do echo "<boolean name=\"$key\" value=\"$value\" />"; done
     echo '<boolean name="fileSize" value="true" />'; echo '</map>'
   } >"$template"
-  for name in com.android.documentsui_preferences.xml com.android.documentsui.xml DocumentsUI.xml; do cp -f "$template" "$GEN/$name" || return 1; install_changed "$GEN/$name" "$base/$name" "$uid" 600 "DocumentsUI $name" || return 1; done
+  for name in com.android.documentsui_preferences.xml com.android.documentsui.xml DocumentsUI.xml; do
+    cp -f "$template" "$GEN/$name" || return 1
+    install_changed "$GEN/$name" "$base/$name" "$uid" 600 "DocumentsUI $name" || return 1
+  done
   rm -f "$template"
 }
 
 install_helper() {
   [ -f "$HELPER_SRC" ] || return 1
   mkdir -p "$STATE" || return 1
-  [ -f "$HELPER_DST" ] && cmp -s "$HELPER_SRC" "$HELPER_DST" && [ "$(stat -c %a "$HELPER_DST" 2>/dev/null)" = 755 ] && { noop "root helper current"; return 0; }
-  cp -f "$HELPER_SRC" "$HELPER_DST" || return 1
-  chown 0:0 "$HELPER_DST"; chmod 0755 "$HELPER_DST"; restorecon "$HELPER_DST" >/dev/null 2>&1 || :
-  mut "root helper updated"
+  changed=0
+  if [ -f "$HELPER_DST" ] && cmp -s "$HELPER_SRC" "$HELPER_DST"; then
+    noop "root helper content current"
+  else
+    cp -f -- "$HELPER_SRC" "$HELPER_DST" || return 1
+    changed=1
+    mut "root helper content updated"
+  fi
+  owner=$(stat -c '%u:%g' "$HELPER_DST" 2>/dev/null) || return 1
+  if [ "$owner" = 0:0 ]; then
+    noop "root helper owner current"
+  else
+    chown -- 0:0 "$HELPER_DST" || return 1
+    changed=1
+    mut "root helper owner repaired"
+  fi
+  current_mode=$(stat -c '%a' "$HELPER_DST" 2>/dev/null) || return 1
+  if [ "$current_mode" = 755 ]; then
+    noop "root helper mode current"
+  else
+    chmod 0755 -- "$HELPER_DST" || return 1
+    changed=1
+    mut "root helper mode repaired"
+  fi
+  [ "$changed" -eq 0 ] || restorecon "$HELPER_DST" >/dev/null 2>&1 || log "WARN: root helper restorecon failed"
 }
 
 prepare_stage() {
   case "$ROOT_STAGE" in /storage/emulated/0/*) ;; *) ROOT_STAGE=/storage/emulated/0/.ts-docsui-root-provider;; esac
   mkdir -p "$ROOT_STAGE" || return 1
-  chmod 0777 "$ROOT_STAGE" 2>/dev/null || :
   find "$ROOT_STAGE" -maxdepth 1 -type f -name 'root-*.stage' -mmin +60 -delete 2>/dev/null || :
 }
 
@@ -316,15 +406,31 @@ if on "$FIX_ENABLE_EXTERNAL_STORAGE_PROVIDER"; then enable_pkg com.android.exter
 on "$FIX_DISABLE_EXTERNAL_STORAGE_TEST_PROVIDER" && set_component disabled com.android.externalstorage/.TestDocumentsProvider || :
 on "$FIX_REPAIR_DOCUMENTSUI_DATA_OWNER" && repair_owner com.android.documentsui || :
 
-if on "$FIX_ENABLE_ROOT_FILE_PROVIDER" && install_helper && enable_pkg "$ROOT_PKG"; then prepare_stage || :; auto_root || :; write_root_prefs || :; set_component enabled "$ROOT_COMPONENT" || :; else set_component disabled "$ROOT_COMPONENT" || :; log 'WARN: root provider unavailable; stock storage remains enabled'; fi
+if on "$FIX_ENABLE_ROOT_FILE_PROVIDER" && install_helper && enable_pkg "$ROOT_PKG"; then
+  if prepare_stage && write_root_prefs; then
+    auto_root || log 'WARN: automatic root policy unavailable; manual Magisk grant remains possible'
+    set_component enabled "$ROOT_COMPONENT" || log 'ERROR: root provider component enable failed'
+  else
+    set_component disabled "$ROOT_COMPONENT" || :
+    log 'ERROR: root provider runtime preparation failed; provider left disabled'
+  fi
+else
+  set_component disabled "$ROOT_COMPONENT" || :
+  log 'WARN: root provider unavailable; stock storage remains enabled'
+fi
 
 if on "$FIX_GRANT_STORAGE_ACCESS"; then for pkg in com.android.documentsui com.android.externalstorage "$ROOT_PKG"; do grant_permission "$pkg" android.permission.READ_EXTERNAL_STORAGE; grant_permission "$pkg" android.permission.WRITE_EXTERNAL_STORAGE; set_appop "$pkg" READ_EXTERNAL_STORAGE; set_appop "$pkg" WRITE_EXTERNAL_STORAGE; set_appop "$pkg" LEGACY_STORAGE; done; fi
 if on "$FIX_CREATE_STANDARD_INTERNAL_DIRS"; then for d in Download Documents Music Movies Pictures DCIM Alarms Audiobooks Notifications Podcasts Ringtones; do mkdir -p "/storage/emulated/0/$d" >>"$LOG" 2>&1 || :; done; fi
 
 show=1
 case "$EXTERNAL_ROOT_MODE" in hide) show=0;; auto) primary_healthy; [ "$?" -eq 1 ] && show=0;; esac
-write_documentsui_prefs "$show" || log 'ERROR: DocumentsUI preferences failed'
-on "$FIX_REFRESH_PICKER_ON_CHANGE" && refresh_once "$show" || :
+documentsui_prefs_ready=0
+if write_documentsui_prefs "$show"; then
+  documentsui_prefs_ready=1
+else
+  log 'ERROR: DocumentsUI preferences failed; cache refresh not marked complete'
+fi
+if [ "$documentsui_prefs_ready" -eq 1 ] && on "$FIX_REFRESH_PICKER_ON_CHANGE"; then refresh_once "$show" || :; fi
 if on "$FIX_WARM_UP_PROVIDERS"; then for uri in content://com.android.providers.downloads.documents/root content://com.android.externalstorage.documents/root; do bounded 8 "content query --uri '$uri' --user '$USER_ID'" >>"$LOG" 2>&1 || :; done; fi
 on "$FIX_VERIFY_PICKER_RESOLVER" && verify_resolver || :
 rm -f "$GEN"/* 2>/dev/null || :
