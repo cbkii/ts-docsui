@@ -5,11 +5,14 @@ import argparse
 import base64
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
+
+CERT_DIGEST_RE = re.compile(r"^Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]+)$", re.MULTILINE)
 
 
 def sha256(path: Path) -> str:
@@ -23,6 +26,26 @@ def sha256(path: Path) -> str:
 def fail(message: str) -> int:
     print(f"ERROR: {message}", file=sys.stderr)
     return 1
+
+
+def signer_digest(apksigner: str, apk: Path) -> str:
+    completed = subprocess.run(
+        [apksigner, "verify", "--print-certs", str(apk)],
+        check=False,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"apksigner verification failed for {apk}: {completed.stderr.strip()}"
+        )
+    match = CERT_DIGEST_RE.search(completed.stdout)
+    if not match:
+        raise RuntimeError(f"apksigner did not report a SHA-256 signer digest for {apk}")
+    return match.group(1).lower()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -106,6 +129,26 @@ def main(argv: list[str] | None = None) -> int:
                 return fail(f"provider APK has a corrupt member: {bad}")
     except zipfile.BadZipFile as exc:
         return fail(f"provider APK is invalid: {exc}")
+
+    apksigner = shutil.which("apksigner")
+    if not apksigner:
+        return fail("apksigner is unavailable after the Android SDK setup")
+    try:
+        built_signer = signer_digest(apksigner, output_apk)
+        if baseline_apk.is_file():
+            baseline_signer = signer_digest(apksigner, baseline_apk)
+            if baseline_signer != built_signer:
+                return fail(
+                    "provider signing certificate changed: "
+                    f"baseline={baseline_signer} built={built_signer}"
+                )
+            print(f"signer_sha256={built_signer}")
+            print("OK provider signing certificate matches the tracked baseline")
+        else:
+            print(f"signer_sha256={built_signer}")
+            print("WARN: no tracked provider APK was available for signing-baseline comparison")
+    except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        return fail(str(exc))
 
     print(f"OK provider APK: {output_apk}")
     print(f"size={output_apk.stat().st_size}")
