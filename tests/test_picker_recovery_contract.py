@@ -80,14 +80,50 @@ class PickerRecoveryContractTests(unittest.TestCase):
         self.assertIn("enabledComponents", body)
         self.assertIn("disabledComponents", body)
 
+    def test_package_install_existing_is_only_used_when_absent_for_user(self) -> None:
+        service = self.read("module/service.sh")
+        self.assertIn("pkg_installed()", service)
+        body = self.method_body(service, "enable_pkg()")
+        self.assertIn('if ! pkg_installed "$pkg"', body)
+        self.assertIn('pm install-existing --user "$USER_ID" "$pkg"', body)
+
+    def test_file_and_directory_metadata_repairs_are_compare_before_write(self) -> None:
+        service = self.read("module/service.sh")
+        file_body = self.method_body(service, "install_changed()")
+        self.assertLess(file_body.index("owner=$(stat"), file_body.index('chown -- "$uid:$uid"'))
+        self.assertLess(file_body.index("current_mode=$(stat"), file_body.index('chmod "$mode" --'))
+        self.assertIn('[ "$changed" -eq 0 ] || restorecon', file_body)
+        directory_body = self.method_body(service, "ensure_dir_meta()")
+        self.assertIn('directory owner current', directory_body)
+        self.assertIn('directory mode current', directory_body)
+
+    def test_shared_preferences_directories_are_app_owned(self) -> None:
+        service = self.read("module/service.sh")
+        root_prefs = self.method_body(service, "write_root_prefs()")
+        documentsui_prefs = self.method_body(service, "write_documentsui_prefs()")
+        self.assertIn('ensure_dir_meta "$base" "$uid" 771', root_prefs)
+        self.assertIn('ensure_dir_meta "$base" "$uid" 771', documentsui_prefs)
+
     def test_root_provider_failure_is_isolated_from_stock_provider(self) -> None:
         service = self.read("module/service.sh")
         start = service.index('if on "$FIX_ENABLE_ROOT_FILE_PROVIDER"')
         end = service.index('if on "$FIX_GRANT_STORAGE_ACCESS"', start)
         block = service[start:end]
         self.assertNotIn("com.android.externalstorage", block)
+        self.assertIn('if prepare_stage && write_root_prefs', block)
         self.assertIn('set_component disabled "$ROOT_COMPONENT"', block)
+        self.assertIn("provider left disabled", block)
         self.assertIn("stock storage remains enabled", block)
+
+    def test_documentsui_cache_refresh_requires_preferences_to_succeed(self) -> None:
+        service = self.read("module/service.sh")
+        start = service.index("documentsui_prefs_ready=0")
+        end = service.index('if on "$FIX_WARM_UP_PROVIDERS"', start)
+        block = service[start:end]
+        self.assertIn('if write_documentsui_prefs "$show"', block)
+        self.assertIn('documentsui_prefs_ready=1', block)
+        self.assertIn('[ "$documentsui_prefs_ready" -eq 1 ]', block)
+        self.assertIn('cache refresh not marked complete', block)
 
     def test_boot_warmup_does_not_start_custom_provider(self) -> None:
         service = self.read("module/service.sh")
@@ -147,11 +183,13 @@ class PickerRecoveryContractTests(unittest.TestCase):
         self.assertIn('"ts-docsui"', builder)
         self.assertIn("DEBUG_ONLY", builder)
 
-    def test_exact_tag_asset_rebuild_allows_older_immutable_release(self) -> None:
+    def test_exact_tag_asset_rebuild_is_immutable_and_existing_only(self) -> None:
         workflow = self.read(".github/workflows/release-magisk-module.yml")
         self.assertIn("replace_existing_assets", workflow)
         self.assertIn("--allow-lower-version", workflow)
         self.assertIn('extra_args+=(--allow-lower-version)', workflow)
+        self.assertIn('REPLACE_EXISTING_ASSETS', workflow)
+        self.assertIn('requires an existing exact tag and release', workflow)
 
 
 if __name__ == "__main__":
