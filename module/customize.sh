@@ -106,11 +106,14 @@ case "$MODPATH" in
 esac
 mkdir -p "$MODPATH" 2>/dev/null || stop_install "Cannot create module directory"
 
-for file in module.prop config.default customize.sh service.sh post-fs-data.sh uninstall.sh README.md; do
+for file in module.prop config.default customize.sh service.sh post-fs-data.sh uninstall.sh; do
   note "- extracting $file"
   extract_file "$file" "$MODPATH/$file" || stop_install "Failed to extract $file"
 done
 
+if zip_has README.md; then
+  extract_file README.md "$MODPATH/README.md" || stop_install "Failed to extract README.md"
+fi
 if zip_has action.sh; then
   note "- extracting debug action"
   extract_file action.sh "$MODPATH/action.sh" || stop_install "Failed to extract action.sh"
