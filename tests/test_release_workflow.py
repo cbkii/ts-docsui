@@ -66,6 +66,21 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("source_cert=", WORKFLOW)
         self.assertNotIn("built_cert=", WORKFLOW)
 
+    def test_release_summary_uses_environment_indirection(self) -> None:
+        summary = WORKFLOW.split("      - name: Write release summary\n", 1)[1]
+        for variable, expression in (
+            ("RELEASE_TAG", "steps.version.outputs.release_tag"),
+            ("RELEASE_VERSION_CODE", "steps.metadata.outputs.release_version_code"),
+            ("RELEASE_COMMIT", "steps.source.outputs.release_commit"),
+            ("FINAL_NAME", "steps.final.outputs.zip_name"),
+            ("DEBUG_NAME", "steps.debug.outputs.zip_name"),
+        ):
+            with self.subTest(variable=variable):
+                self.assertIn(f"          {variable}: ${{{{ {expression} }}}}", summary)
+                self.assertIn(f"${{{variable}}}", summary)
+                run_block = summary.split("        run: |\n", 1)[1]
+                self.assertNotIn(f"${{{{ {expression} }}}}", run_block)
+
     def test_source_module_uses_public_stable_update_url(self) -> None:
         self.assertIn(
             "updateJson=https://github.com/cbkii/ts-docsui/releases/latest/download/update.json",
