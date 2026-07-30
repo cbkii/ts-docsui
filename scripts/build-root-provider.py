@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     encoded_key = repo / "rootprovider/keystore/tsdocsui-root-provider.jks.b64"
     key = repo / "rootprovider/keystore/tsdocsui-root-provider.jks"
     output_apk = repo / "module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk"
+    baseline_apk = repo / ".build/provider-before-build.apk"
 
     if not encoded_key.is_file():
         return fail(f"encoded signing key is missing: {encoded_key}")
@@ -54,6 +55,14 @@ def main(argv: list[str] | None = None) -> int:
     key.parent.mkdir(parents=True, exist_ok=True)
     key.write_bytes(key_bytes)
     os.chmod(key, 0o600)
+
+    if output_apk.is_file():
+        baseline_apk.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output_apk, baseline_apk)
+        print(f"BASELINE provider APK: {baseline_apk}")
+        print(f"baseline_sha256={sha256(baseline_apk)}")
+    else:
+        baseline_apk.unlink(missing_ok=True)
 
     gradle = shutil.which(args.gradle) if os.path.sep not in args.gradle else args.gradle
     if not gradle:
