@@ -15,17 +15,18 @@ FIXED_DATE = (2026, 1, 1, 0, 0, 0)
 EXCLUDE_NAMES = {".git", ".github", "dist", "__pycache__"}
 EXECUTE_SUFFIXES = {".sh"}
 EXECUTE_NAMES = {"update-binary"}
-DEBUG_ONLY = {
-    "action.sh",
-    "tools/ts18-saf-deepdiag.sh",
-}
+DEBUG_ONLY = {"action.sh", "tools/ts18-saf-deepdiag.sh"}
 DEBUG_REQUIRED = DEBUG_ONLY | {"README.md"}
 FINAL_EXCLUDE = DEBUG_REQUIRED
+UPDATE_JSON_URLS = {
+    "final": "https://github.com/cbkii/ts-docsui/releases/latest/download/update.json",
+    "debug": "https://github.com/cbkii/ts-docsui/releases/latest/download/update-debug.json",
+}
 
 
-def parse_prop(path: Path) -> dict[str, str]:
+def parse_prop_text(text: str) -> dict[str, str]:
     props: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8", errors="strict").splitlines():
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -35,8 +36,8 @@ def parse_prop(path: Path) -> dict[str, str]:
     return props
 
 
-def safe_filename(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-._") or "module"
+def parse_prop(path: Path) -> dict[str, str]:
+    return parse_prop_text(path.read_text(encoding="utf-8", errors="strict"))
 
 
 def should_exclude(path: Path, module_dir: Path, variant: str) -> bool:
@@ -52,13 +53,25 @@ def zip_mode(path: Path) -> int:
     return stat.S_IFREG | 0o644
 
 
-def add_file(archive: zipfile.ZipFile, path: Path, arcname: str) -> None:
+def add_bytes(archive: zipfile.ZipFile, path: Path, arcname: str, payload: bytes) -> None:
     info = zipfile.ZipInfo(arcname, FIXED_DATE)
     info.compress_type = zipfile.ZIP_STORED
     info.create_system = 3
     info.external_attr = zip_mode(path) << 16
     info.extra = b""
-    archive.writestr(info, path.read_bytes())
+    archive.writestr(info, payload)
+
+
+def variant_module_prop(path: Path, variant: str) -> bytes:
+    text = path.read_text(encoding="utf-8", errors="strict")
+    updated, count = re.subn(
+        r"(?m)^updateJson=.*$",
+        f"updateJson={UPDATE_JSON_URLS[variant]}",
+        text,
+    )
+    if count != 1:
+        raise ValueError("module.prop must contain exactly one updateJson entry")
+    return (updated.rstrip("\n") + "\n").encode("utf-8")
 
 
 def sha256(path: Path) -> str:
@@ -102,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
     if not version_code.isdigit() or int(version_code) < 1:
         print(f"ERROR: versionCode must be a positive integer: {version_code!r}", file=sys.stderr)
         return 1
+    if props.get("updateJson") != UPDATE_JSON_URLS["final"]:
+        print("ERROR: source module.prop must use the stable final update channel", file=sys.stderr)
+        return 1
     for required in DEBUG_REQUIRED:
         if not (module_dir / required).is_file():
             print(f"ERROR: source module is missing debug payload: {required}", file=sys.stderr)
@@ -125,7 +141,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as archive:
             for path in files:
-                add_file(archive, path, path.relative_to(module_dir).as_posix())
+                arcname = path.relative_to(module_dir).as_posix()
+                payload = variant_module_prop(path, args.variant) if arcname == "module.prop" else path.read_bytes()
+                add_bytes(archive, path, arcname, payload)
         with zipfile.ZipFile(temp_path, allowZip64=False) as archive:
             bad = archive.testzip()
             if bad:
@@ -137,6 +155,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError(f"final ZIP contains non-runtime entries: {sorted(FINAL_EXCLUDE & names)}")
             if args.variant == "debug" and not DEBUG_REQUIRED <= names:
                 raise RuntimeError(f"debug ZIP is missing entries: {sorted(DEBUG_REQUIRED - names)}")
+            embedded = parse_prop_text(archive.read("module.prop").decode("utf-8", errors="strict"))
+            expected_update = UPDATE_JSON_URLS[args.variant]
+            if embedded.get("updateJson") != expected_update:
+                raise RuntimeError(f"{args.variant} ZIP has the wrong updateJson channel")
         os.replace(temp_path, zip_path)
     except Exception as exc:
         temp_path.unlink(missing_ok=True)
@@ -157,12 +179,11 @@ def main(argv: list[str] | None = None) -> int:
         "zip_path": str(zip_path),
         "sha256": digest,
         "sha256_path": str(sha_path),
+        "update_json": UPDATE_JSON_URLS[args.variant],
     }
     print(json.dumps(result, indent=2, sort_keys=True))
 
-    output_path = args.github_output or (
-        Path(os.environ["GITHUB_OUTPUT"]) if "GITHUB_OUTPUT" in os.environ else None
-    )
+    output_path = args.github_output or (Path(os.environ["GITHUB_OUTPUT"]) if "GITHUB_OUTPUT" in os.environ else None)
     if output_path:
         with output_path.open("a", encoding="utf-8") as handle:
             for key, value in result.items():
