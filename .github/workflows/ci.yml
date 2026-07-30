@@ -1,4 +1,4 @@
-name: Validate TS18 file picker module
+name: Validate ts-docsui modules
 
 'on':
   push:
@@ -6,6 +6,7 @@ name: Validate TS18 file picker module
       - main
       - 'fix/**'
       - 'feature/**'
+      - 'feat/**'
   pull_request:
   workflow_dispatch:
 
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build provider and Magisk ZIP
+    name: Build final and debug Magisk modules
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -29,12 +30,13 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Validate Python and release versioning
+      - name: Validate repository tests
         run: |
           python3 -m compileall -q scripts tests
           python3 -m unittest discover -s tests -p 'test_*.py' -v
           python3 scripts/release_version.py --repo-root . --module-prop module/module.prop
-          python3 scripts/sync_runtime_version.py --repo-root . --check
+          find module -type f -name '*.sh' -print -exec sh -n {} ';'
+          sh -n module/META-INF/com/google/android/update-binary
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -62,6 +64,7 @@ jobs:
           python3 scripts/build-root-provider.py --repo-root . --gradle gradle --timeout 900 2>&1 | tee .build/root-provider-build.log
 
       - name: Upload provider build evidence
+        id: provider_evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -80,69 +83,125 @@ jobs:
           echo 'The signed root-provider build failed. See root-provider-build-evidence.' >&2
           exit 1
 
-      - name: Validate shell syntax
-        run: |
-          find module -type f -name '*.sh' -print -exec sh -n {} ';'
-          sh -n module/META-INF/com/google/android/update-binary
-
       - name: Validate module and provider metadata
         run: |
           set -euo pipefail
-          module_version="$(sed -n 's/^version=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
-          module_code="$(sed -n 's/^versionCode=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
-          python3 scripts/validate-module.py \
-            --module-dir module \
-            --expected-version "${module_version}" \
-            --expected-version-code "${module_code}"
+          version="$(sed -n 's/^version=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
+          code="$(sed -n 's/^versionCode=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
+          python3 scripts/validate-module.py --module-dir module --expected-version "${version}" --expected-version-code "${code}"
 
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           aapt_path="$(find "${sdk_root}/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
           badging="$(${aapt_path} dump badging module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk | head -n1)"
           provider_code="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<< "${badging}")"
           provider_name="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<< "${badging}")"
-          [[ "${provider_code}" == "${module_code}" ]]
-          [[ "${provider_name}" == "${module_version#v}" ]]
+          [[ "${provider_code}" == "${code}" ]]
+          [[ "${provider_name}" == "${version#v}" ]]
 
-      - name: Build installable ZIP
-        id: module
-        run: python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --github-output "$GITHUB_OUTPUT"
+      - name: Build final module
+        id: final
+        run: python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --variant final --github-output "$GITHUB_OUTPUT"
 
-      - name: Verify installable ZIP
+      - name: Build debug module
+        id: debug
+        run: python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --variant debug --github-output "$GITHUB_OUTPUT"
+
+      - name: Verify both module variants
+        env:
+          FINAL_ZIP: ${{ steps.final.outputs.zip_path }}
+          FINAL_SHA: ${{ steps.final.outputs.sha256_path }}
+          DEBUG_ZIP: ${{ steps.debug.outputs.zip_path }}
+          DEBUG_SHA: ${{ steps.debug.outputs.sha256_path }}
         run: |
-          python3 - <<'PY'
+          set -euo pipefail
+          python3 - "${FINAL_ZIP}" "${DEBUG_ZIP}" <<'PY'
+          import sys
           import zipfile
           from pathlib import Path
-          zips = list(Path('dist').glob('*.zip'))
-          if len(zips) != 1:
-              raise SystemExit(f'expected one ZIP, found {zips}')
-          with zipfile.ZipFile(zips[0]) as archive:
-              bad = archive.testzip()
-              if bad:
-                  raise SystemExit(f'corrupt ZIP member: {bad}')
-              names = set(archive.namelist())
-              required = {
-                  'module.prop',
-                  'customize.sh',
-                  'system/priv-app/DocumentsUI/DocumentsUI.apk',
-                  'system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk',
-                  'tools/rootfs-helper.sh',
-              }
-              missing = required - names
-              if missing:
-                  raise SystemExit(f'missing ZIP entries: {sorted(missing)}')
-              compressed = [info.filename for info in archive.infolist() if info.compress_type != zipfile.ZIP_STORED]
-              if compressed:
-                  raise SystemExit(f'non-STORE entries: {compressed[:10]}')
-          print(f'OK {zips[0]}')
-          PY
-          (cd dist && sha256sum -c "$(basename '${{ steps.module.outputs.sha256_path }}')")
 
-      - name: Upload installable module
+          final_path, debug_path = map(Path, sys.argv[1:])
+          runtime = {
+              'module.prop',
+              'customize.sh',
+              'service.sh',
+              'post-fs-data.sh',
+              'uninstall.sh',
+              'system/priv-app/DocumentsUI/DocumentsUI.apk',
+              'system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk',
+              'tools/rootfs-helper.sh',
+          }
+          debug_only = {'action.sh', 'tools/ts18-saf-deepdiag.sh'}
+          debug_required = debug_only | {'README.md'}
+          non_runtime = debug_required
+          forbidden = {
+              'system/etc/sysconfig/ts18-documentsui-saf.xml',
+              'system/priv-app/ExternalStorageProvider/ExternalStorageProvider.apk',
+              'system/priv-app/TS18LocalDocumentsProvider/TS18LocalDocumentsProvider.apk',
+              'tools/ts18-saf-diagnose.sh',
+              'tools/ts18-saf-launch.sh',
+              'tools/ts18-saf-evidence-v2.sh',
+              'tools/ts18-saf-evidence-common.sh',
+              'tools/ts18-saf-evidence-remount.sh',
+          }
+          for path, variant in ((final_path, 'final'), (debug_path, 'debug')):
+              with zipfile.ZipFile(path, allowZip64=False) as archive:
+                  bad = archive.testzip()
+                  if bad:
+                      raise SystemExit(f'{variant}: corrupt member {bad}')
+                  names = set(archive.namelist())
+                  missing = runtime - names
+                  if missing:
+                      raise SystemExit(f'{variant}: missing runtime entries {sorted(missing)}')
+                  present = forbidden & names
+                  if present:
+                      raise SystemExit(f'{variant}: forbidden entries {sorted(present)}')
+                  compressed = [item.filename for item in archive.infolist() if item.compress_type != zipfile.ZIP_STORED]
+                  if compressed:
+                      raise SystemExit(f'{variant}: non-STORE entries {compressed[:10]}')
+                  if variant == 'final' and non_runtime & names:
+                      raise SystemExit(f'final: non-runtime entries present {sorted(non_runtime & names)}')
+                  if variant == 'debug' and not debug_required <= names:
+                      raise SystemExit(f'debug: missing debug entries {sorted(debug_required - names)}')
+          print(f'OK {final_path.name} and {debug_path.name}')
+          PY
+          (cd dist && sha256sum -c "$(basename "${FINAL_SHA}")")
+          (cd dist && sha256sum -c "$(basename "${DEBUG_SHA}")")
+
+      - name: Upload final module
+        id: final_artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.module.outputs.zip_name }}
+          name: ${{ steps.final.outputs.zip_name }}
           path: |
-            ${{ steps.module.outputs.zip_path }}
-            ${{ steps.module.outputs.sha256_path }}
+            ${{ steps.final.outputs.zip_path }}
+            ${{ steps.final.outputs.sha256_path }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload debug module
+        id: debug_artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.debug.outputs.zip_name }}
+          path: |
+            ${{ steps.debug.outputs.zip_path }}
+            ${{ steps.debug.outputs.sha256_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Write artifact summary
+        if: ${{ always() }}
+        env:
+          FINAL_URL: ${{ steps.final_artifact.outputs.artifact-url }}
+          DEBUG_URL: ${{ steps.debug_artifact.outputs.artifact-url }}
+          PROVIDER_URL: ${{ steps.provider_evidence.outputs.artifact-url }}
+        run: |
+          {
+            echo '## ts-docsui build artifacts'
+            echo
+            echo '| Variant | Download | Contents |'
+            echo '|---|---|---|'
+            [[ -z "${FINAL_URL}" ]] || echo "| Final: ${{ steps.final.outputs.zip_name }} | [Download](${FINAL_URL}) | Lean runtime module and SHA-256 |"
+            [[ -z "${DEBUG_URL}" ]] || echo "| Debug: ${{ steps.debug.outputs.zip_name }} | [Download](${DEBUG_URL}) | Runtime plus diagnostics/evidence and SHA-256 |"
+            [[ -z "${PROVIDER_URL}" ]] || echo "| Provider evidence | [Download](${PROVIDER_URL}) | Build log and lint reports |"
+          } >>"${GITHUB_STEP_SUMMARY}"

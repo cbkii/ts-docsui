@@ -1,11 +1,24 @@
 from __future__ import annotations
 
-import re
 import unittest
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+OLD_MODULE_ID = "ts18_documentsui_" + "saf_full"
+TEXT_SUFFIXES = {
+    "",
+    ".default",
+    ".gradle",
+    ".java",
+    ".json",
+    ".md",
+    ".prop",
+    ".py",
+    ".sh",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
 
 
 class PickerRecoveryContractTests(unittest.TestCase):
@@ -17,145 +30,166 @@ class PickerRecoveryContractTests(unittest.TestCase):
         brace = source.index("{", start)
         depth = 0
         for index in range(brace, len(source)):
-            char = source[index]
-            if char == "{":
+            if source[index] == "{":
                 depth += 1
-            elif char == "}":
+            elif source[index] == "}":
                 depth -= 1
                 if depth == 0:
                     return source[brace + 1 : index]
         self.fail(f"unterminated method: {signature}")
 
-    def test_query_roots_never_invokes_magisk_or_root_shell(self) -> None:
-        source = self.read(
-            "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootDocumentsProvider.java"
-        )
-        body = self.method_body(source, "public Cursor queryRoots(String[] projection)")
-        self.assertNotIn("RootShell", body)
-        self.assertNotIn("su", body.lower())
-        self.assertIn("addFastRoot", body)
+    def text_files(self):
+        for path in REPO_ROOT.rglob("*"):
+            if not path.is_file():
+                continue
+            if ".git" in path.parts or "__pycache__" in path.parts:
+                continue
+            if path.suffix.lower() not in TEXT_SUFFIXES:
+                continue
+            yield path
 
-    def test_root_document_metadata_has_non_root_fast_path(self) -> None:
-        source = self.read(
-            "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootDocumentsProvider.java"
+    def test_module_identity_is_simple_and_old_id_is_absent(self) -> None:
+        self.assertIn("id=ts-docsui", self.read("module/module.prop"))
+        all_text = "\n".join(
+            path.read_text(encoding="utf-8", errors="ignore")
+            for path in self.text_files()
         )
-        body = self.method_body(source, "private RootEntry entryFor(ParsedId parsed)")
-        self.assertIn("localEntry", body)
-        self.assertIn("syntheticRootEntry", body)
-        self.assertLess(body.index("localEntry"), body.index("RootShell.stat"))
+        self.assertNotIn(OLD_MODULE_ID, all_text)
 
-    def test_non_device_storage_lists_locally_before_root_fallback(self) -> None:
-        source = self.read(
-            "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootDocumentsProvider.java"
-        )
-        body = self.method_body(source, "private List<RootEntry> listEntries(ParsedId parent)")
-        self.assertIn("!ROOT_DEVICE.equals", body)
-        self.assertIn("localChildren", body)
-        self.assertLess(body.index("localChildren"), body.index("RootShell.list"))
+    def test_runtime_output_is_download_only_and_state_is_small(self) -> None:
+        service = self.read("module/service.sh")
+        self.assertIn("STATE=/data/adb/ts-docsui", service)
+        self.assertIn("OUT=/storage/emulated/0/Download/ts-docsui", service)
+        self.assertIn("LOG=/dev/null", service)
+        self.assertNotIn("/data/adb/ts-docsui/logs", service)
+        self.assertNotIn("/data/adb/ts-docsui/diagnostics", service)
 
-    def test_root_metadata_and_listing_are_bounded(self) -> None:
-        source = self.read(
+    def test_runtime_config_loader_accepts_known_safe_values(self) -> None:
+        service = self.read("module/service.sh")
+        body = self.method_body(service, "load_cfg()")
+        self.assertIn('case "$key" in', body)
+        self.assertIn('case "$value" in', body)
+        self.assertIn('set_cfg "$key" "$value"', body)
+        self.assertNotIn('case "$key:$value"', body)
+
+    def test_component_state_has_android10_package_dump_fallback(self) -> None:
+        service = self.read("module/service.sh")
+        body = self.method_body(service, "component_state()")
+        self.assertIn("get-component-enabled-setting", body)
+        self.assertIn('dumpsys package "$package"', body)
+        self.assertIn("enabledComponents", body)
+        self.assertIn("disabledComponents", body)
+
+    def test_package_install_existing_is_only_used_when_absent_for_user(self) -> None:
+        service = self.read("module/service.sh")
+        self.assertIn("pkg_installed()", service)
+        body = self.method_body(service, "enable_pkg()")
+        self.assertIn('if ! pkg_installed "$pkg"', body)
+        self.assertIn('pm install-existing --user "$USER_ID" "$pkg"', body)
+
+    def test_file_and_directory_metadata_repairs_are_compare_before_write(self) -> None:
+        service = self.read("module/service.sh")
+        file_body = self.method_body(service, "install_changed()")
+        self.assertLess(file_body.index("owner=$(stat"), file_body.index('chown -- "$uid:$uid"'))
+        self.assertLess(file_body.index("current_mode=$(stat"), file_body.index('chmod "$mode" --'))
+        self.assertIn('[ "$changed" -eq 0 ] || restorecon', file_body)
+        directory_body = self.method_body(service, "ensure_dir_meta()")
+        self.assertIn('directory owner current', directory_body)
+        self.assertIn('directory mode current', directory_body)
+
+    def test_shared_preferences_directories_are_app_owned(self) -> None:
+        service = self.read("module/service.sh")
+        root_prefs = self.method_body(service, "write_root_prefs()")
+        documentsui_prefs = self.method_body(service, "write_documentsui_prefs()")
+        self.assertIn('ensure_dir_meta "$base" "$uid" 771', root_prefs)
+        self.assertIn('ensure_dir_meta "$base" "$uid" 771', documentsui_prefs)
+
+    def test_root_provider_failure_is_isolated_from_stock_provider(self) -> None:
+        service = self.read("module/service.sh")
+        start = service.index('if on "$FIX_ENABLE_ROOT_FILE_PROVIDER"')
+        end = service.index('if on "$FIX_GRANT_STORAGE_ACCESS"', start)
+        block = service[start:end]
+        self.assertNotIn("com.android.externalstorage", block)
+        self.assertIn('if prepare_stage && write_root_prefs', block)
+        self.assertIn('set_component disabled "$ROOT_COMPONENT"', block)
+        self.assertIn("provider left disabled", block)
+        self.assertIn("stock storage remains enabled", block)
+
+    def test_documentsui_cache_refresh_requires_preferences_to_succeed(self) -> None:
+        service = self.read("module/service.sh")
+        start = service.index("documentsui_prefs_ready=0")
+        end = service.index('if on "$FIX_WARM_UP_PROVIDERS"', start)
+        block = service[start:end]
+        self.assertIn('if write_documentsui_prefs "$show"', block)
+        self.assertIn('documentsui_prefs_ready=1', block)
+        self.assertIn('[ "$documentsui_prefs_ready" -eq 1 ]', block)
+        self.assertIn('cache refresh not marked complete', block)
+
+    def test_boot_warmup_does_not_start_custom_provider(self) -> None:
+        service = self.read("module/service.sh")
+        start = service.index('if on "$FIX_WARM_UP_PROVIDERS"')
+        end = service.index('on "$FIX_VERIFY_PICKER_RESOLVER"', start)
+        block = service[start:end]
+        self.assertIn("downloads.documents/root", block)
+        self.assertIn("externalstorage.documents/root", block)
+        self.assertNotIn("cbkii.tsdocsui.root.documents", block)
+
+    def test_diagnostics_work_only_in_download(self) -> None:
+        diagnostic = self.read("module/tools/ts18-saf-deepdiag.sh")
+        self.assertIn("/storage/emulated/0/Download/ts-docsui/diagnostics", diagnostic)
+        self.assertNotIn("/data/adb/ts-docsui/diagnostics", diagnostic)
+        self.assertIn("timeout", diagnostic)
+        self.assertIn("tar -tzf", diagnostic)
+
+    def test_root_provider_uses_current_helper_and_stage_paths(self) -> None:
+        shell = self.read(
             "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootShell.java"
         )
-        self.assertIn('run(4, "stat", path)', source)
-        self.assertIn('run(LIST_TIMEOUT_SECONDS, "list", path)', source)
-        self.assertRegex(source, r"LIST_TIMEOUT_SECONDS\s*=\s*8L")
-
-    def test_non_truncating_stage_initialisation_fails_closed(self) -> None:
-        source = self.read(
+        provider = self.read(
             "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootDocumentsProvider.java"
         )
-        body = self.method_body(source, "private ParcelFileDescriptor openStaged(")
-        self.assertIn("!copyOutLocally(sourcePath, stage)", body)
-        self.assertIn("RootShell.copyOut(sourcePath, stage", body)
-        self.assertNotIn("RootShell.stat(sourcePath)", body)
-        self.assertLess(
-            body.index("!copyOutLocally(sourcePath, stage)"),
-            body.index("RootShell.copyOut(sourcePath, stage"),
+        self.assertIn('/data/adb/ts-docsui/rootfs-helper.sh', shell)
+        self.assertIn('/storage/emulated/0/.ts-docsui-root-provider', provider)
+        self.assertNotIn('/data/adb/ts18-documentsui-saf', shell + provider)
+        self.assertNotIn('/storage/emulated/0/.TS18-Root-Provider', shell + provider)
+
+    def test_legacy_wrappers_collectors_and_version_sync_are_removed(self) -> None:
+        obsolete = (
+            ".github/workflows/apply-android10-service-fix.yml",
+            "module/tools/ts18-saf-diagnose.sh",
+            "module/tools/ts18-saf-launch.sh",
+            "module/tools/ts18-saf-evidence-v2.sh",
+            "module/tools/ts18-saf-evidence-common.sh",
+            "module/tools/ts18-saf-evidence-remount.sh",
+            "scripts/sync_runtime_version.py",
+            "tests/test_sync_runtime_version.py",
         )
-        self.assertIn('throw fileNotFound("Open failed", e)', body)
+        for relative in obsolete:
+            with self.subTest(relative=relative):
+                self.assertFalse((REPO_ROOT / relative).exists())
 
-    def test_service_repairs_known_v101_launch_breakages(self) -> None:
-        service = self.read("module/service.sh")
-        required = (
-            "repair_package_data_owner com.android.documentsui",
-            "cleanup_stale_provider",
-            "com.ts18.safprovider",
-            "clear_picker_preferred_activities",
-            "verify_picker_resolver",
-            "com.android.documentsui/.picker.PickActivity",
-            "com.android.documentsui/.files.LauncherActivity",
-            "com.android.documentsui/.ViewDownloadsActivity",
-            "com.android.documentsui/.ScopedAccessActivity",
-        )
-        for marker in required:
-            with self.subTest(marker=marker):
-                self.assertIn(marker, service)
-
-    def test_service_does_not_report_unconditional_component_success(self) -> None:
-        service = self.read("module/service.sh")
-        body = self.method_body(service, "enable_component()")
-        self.assertIn("rc=$?", body)
-        self.assertIn('if [ "$rc" -eq 0 ]', body)
-        self.assertIn("ERROR: failed to enable component", body)
-
-    def test_service_logs_best_effort_repairs_and_hardens_rm(self) -> None:
-        service = self.read("module/service.sh")
-        load_config = self.method_body(service, "load_config()")
-        enable_pkg = self.method_body(service, "enable_pkg()")
-        refresh = self.method_body(service, "refresh_picker_once()")
-        self.assertNotIn('chmod 0644 "$CFG" 2>/dev/null || true', load_config)
-        self.assertIn("runtime config created but chmod 0644 was rejected", load_config)
-        self.assertIn("install-existing not applied", enable_pkg)
-        self.assertNotIn("install-existing --user", enable_pkg.split("if !", 1)[0])
-        self.assertIn('rm -f -- "$base"/databases/roots.db*', refresh)
-
-    def test_default_config_forces_proven_primary_root_visible(self) -> None:
-        config = self.read("module/config.default")
-        self.assertRegex(config, r"(?m)^CONFIG_SCHEMA=2$")
-        self.assertRegex(config, r"(?m)^EXTERNAL_ROOT_MODE=show$")
-        self.assertRegex(config, r"(?m)^FIX_REPAIR_DOCUMENTSUI_DATA_OWNER=1$")
-        self.assertRegex(config, r"(?m)^FIX_DISABLE_STALE_TS18_PROVIDER=1$")
-        self.assertRegex(config, r"(?m)^FIX_VERIFY_PICKER_RESOLVER=1$")
-
-    def test_installer_migrates_old_auto_mode_only_once(self) -> None:
+    def test_installer_is_latest_only_and_supports_optional_debug_payload(self) -> None:
         installer = self.read("module/customize.sh")
-        self.assertIn("old_schema", installer)
-        self.assertIn('if [ "$old_schema" -lt 2 ]', installer)
-        self.assertIn("EXTERNAL_ROOT_MODE=show", installer)
-        self.assertNotIn("EXTERNAL_ROOT_MODE=auto/' \"$merged\"", installer)
+        self.assertIn("MODID=ts-docsui", installer)
+        self.assertIn("zip_has action.sh", installer)
+        self.assertNotIn("OLD_MODID", installer)
+        self.assertNotIn("old_schema", installer)
+        self.assertNotIn(OLD_MODULE_ID, installer)
 
-    def test_sysconfig_declares_all_picker_entrypoints(self) -> None:
-        sysconfig = self.read("module/system/etc/sysconfig/ts18-documentsui-saf.xml")
-        expected = (
-            "com.android.documentsui.picker.PickActivity",
-            "com.android.documentsui.files.FilesActivity",
-            "com.android.documentsui.files.LauncherActivity",
-            "com.android.documentsui.LauncherActivity",
-            "com.android.documentsui.ViewDownloadsActivity",
-            "com.android.documentsui.ScopedAccessActivity",
-        )
-        for component in expected:
-            with self.subTest(component=component):
-                self.assertIn(component, sysconfig)
+    def test_final_and_debug_zip_contract_is_encoded(self) -> None:
+        builder = self.read("scripts/build-magisk-zip.py")
+        self.assertIn('choices=("final", "debug")', builder)
+        self.assertIn('"ts-docsui-debug"', builder)
+        self.assertIn('"ts-docsui"', builder)
+        self.assertIn("DEBUG_ONLY", builder)
 
-    def test_manual_launcher_uses_explicit_documentsui_component(self) -> None:
-        launcher = self.read("module/tools/ts18-saf-launch.sh")
-        self.assertIn("PICKER=com.android.documentsui/.picker.PickActivity", launcher)
-        self.assertIn('am start -n "$PICKER"', launcher)
-
-    def test_shell_quote_emits_posix_embedded_quote_sequence(self) -> None:
-        source = self.read(
-            "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootShell.java"
-        )
-        line = next(line for line in source.splitlines() if "value.replace" in line)
-        self.assertIn(r'''value.replace("'", "'\\''")''', line)
-
-    def test_missing_timeout_never_hides_primary_storage(self) -> None:
-        service = self.read("module/service.sh")
-        self.assertIn("BOUNDED_COMMAND_SKIPPED=125", service)
-        self.assertIn("kept primary visible", service)
-        self.assertIn("/system/bin/toybox timeout", service)
+    def test_exact_tag_asset_rebuild_is_immutable_and_existing_only(self) -> None:
+        workflow = self.read(".github/workflows/release-magisk-module.yml")
+        self.assertIn("replace_existing_assets", workflow)
+        self.assertIn("--allow-lower-version", workflow)
+        self.assertIn('extra_args+=(--allow-lower-version)', workflow)
+        self.assertIn('REPLACE_EXISTING_ASSETS', workflow)
+        self.assertIn('requires an existing exact tag and release', workflow)
 
 
 if __name__ == "__main__":

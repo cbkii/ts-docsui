@@ -1,49 +1,42 @@
-# TS18 Full File Picker
+# ts-docsui
 
-This Magisk module fixes the Android file picker on supported TS18 Android 10 car head units.
-
-## What it fixes
-
-Some TS18 units show only **Downloads** and USB storage in the file picker. This module makes the rest of the internal storage available and adds a separate root file source.
-
-After reboot, the picker can show:
-
-- normal internal storage;
-- **Internal storage (full)**;
-- **Root file system**;
-- connected TS18 USB storage.
+This Magisk module repairs the Android file picker on supported TS18 Android 10 head units. It keeps the stock Android provider for ordinary shared storage and adds a separate Magisk-backed provider for full/root paths.
 
 ## Requirements
 
-- Topway TS18 with Android 10;
-- UIS8581A / SP9863A TS18 hardware;
+- Topway TS18 / UIS8581A / SP9863A hardware;
+- Android 10 / API 29;
 - Magisk 28 or later already working.
 
-Do not use this module on TS10, TS10S, or unrelated units.
-
-This module does not install Magisk and does not root the head unit.
+Do not treat TS10, TS10S or unrelated UIS8581A units as interchangeable.
 
 ## Installation
 
-Install the ZIP from **Magisk > Modules > Install from storage**, then reboot.
+Install one release ZIP from **Magisk > Modules > Install from storage**, then reboot.
 
-If Magisk asks for root access for the file provider, allow it.
+- `ts-docsui-v<versionCode>.zip` is the lean final module.
+- `ts-docsui-debug-v<versionCode>.zip` adds diagnostics and the Magisk **Action** entry.
 
-## Help and diagnostics
+Both variants use module ID `ts-docsui`; installing one replaces the other.
 
-In Magisk, open this module and press **Action**. The diagnostic ZIP is saved under:
+## Runtime files
+
+Small required runtime state:
 
 ```text
-/storage/emulated/0/Download/TS18-SAF-Diagnostics/
+/data/adb/ts-docsui/
+/data/adb/ts-docsui.conf
 ```
 
-Project guides:
+Logs and diagnostic output:
 
-- English: https://github.com/cbkii/ts-docsui/blob/main/README.md
-- 简体中文: https://github.com/cbkii/ts-docsui/blob/main/README.zh-CN.md
-- Русский: https://github.com/cbkii/ts-docsui/blob/main/README.ru.md
-- Technical guide: https://github.com/cbkii/ts-docsui/blob/main/docs/DEVELOPMENT.md
+```text
+/storage/emulated/0/Download/ts-docsui/logs/
+/storage/emulated/0/Download/ts-docsui/diagnostics/
+```
+
+The final variant does not contain diagnostic scripts. In the debug variant, press **Action** in Magisk to create a verified diagnostic archive.
 
 ## Safety
 
-The module does not flash firmware partitions. The **Root file system** entry has real root access, so do not change or delete files that you do not understand.
+The module does not flash firmware, boot, MCU, CAN, LCD or logo partitions. The root source has real root access, but read-only device-mapper mounts remain read-only. Do not modify protected Android, vendor, metadata or Magisk state paths.

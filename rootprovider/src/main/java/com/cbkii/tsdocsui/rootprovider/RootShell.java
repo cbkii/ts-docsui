@@ -20,14 +20,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 final class RootShell {
-    static final String HELPER = "/data/adb/ts18-documentsui-saf/rootfs-helper.sh";
+    static final String HELPER = "/data/adb/ts-docsui/rootfs-helper.sh";
     private static final String TAG = "TS18RootProvider";
     private static final long DEFAULT_TIMEOUT_SECONDS = 4L;
     private static final long LIST_TIMEOUT_SECONDS = 8L;
-    private static final ExecutorService IO_EXECUTOR = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "ts18-root-shell-io");
-        t.setDaemon(true);
-        return t;
+    private static final ExecutorService IO_EXECUTOR = Executors.newCachedThreadPool(runnable -> {
+        Thread thread = new Thread(runnable, "ts-docsui-root-shell-io");
+        thread.setDaemon(true);
+        return thread;
     });
 
     private RootShell() {}
@@ -70,66 +70,45 @@ final class RootShell {
             process = start(action, args);
             stdoutFuture = IO_EXECUTOR.submit(readAll(process.getInputStream()));
             stderrFuture = IO_EXECUTOR.submit(readAll(process.getErrorStream()));
-
-            boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-            if (!finished) {
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 process.destroy();
                 if (!process.waitFor(2, TimeUnit.SECONDS)) {
                     process.destroyForcibly();
                 }
                 return new Result(124, getFuture(stdoutFuture, 1), getFuture(stderrFuture, 1), true);
             }
-            int exit = process.exitValue();
-            return new Result(exit, getFuture(stdoutFuture, 2), getFuture(stderrFuture, 2), false);
-        } catch (IOException | InterruptedException e) {
-            if (e instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-            }
-            return new Result(126, new byte[0], e.toString().getBytes(StandardCharsets.UTF_8), false);
+            return new Result(
+                    process.exitValue(),
+                    getFuture(stdoutFuture, 2),
+                    getFuture(stderrFuture, 2),
+                    false);
+        } catch (IOException failure) {
+            return failureResult(failure);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            return failureResult(failure);
         } finally {
-            if (process != null) {
-                try {
-                    process.getInputStream().close();
-                } catch (IOException ignored) {}
-                try {
-                    process.getErrorStream().close();
-                } catch (IOException ignored) {}
-                try {
-                    process.getOutputStream().close();
-                } catch (IOException ignored) {}
-            }
+            closeProcessStreams(process);
         }
     }
 
     static Process start(String action, String... args) throws IOException {
         StringBuilder command = new StringBuilder();
-        command.append("exec ").append(shellQuote(HELPER)).append(' ').append(shellQuote(action));
+        command.append("exec ")
+                .append(shellQuote(HELPER))
+                .append(' ')
+                .append(shellQuote(action));
         for (String arg : args) {
             command.append(' ').append(shellQuote(encode(arg)));
         }
         return new ProcessBuilder(findSuBinary(), "-c", command.toString()).start();
     }
 
-    private static String findSuBinary() {
-        String[] candidates = new String[] {
-                "/system/bin/su",
-                "/system/xbin/su",
-                "/sbin/su",
-                "/debug_ramdisk/su"
-        };
-        for (String candidate : candidates) {
-            File file = new File(candidate);
-            if (file.isFile() && file.canExecute()) {
-                return candidate;
-            }
-        }
-        return "su";
-    }
-
     static boolean ping() {
         Result result = run(4, "ping");
         if (!result.ok()) {
-            Log.w(TAG, "Root helper ping failed: exit=" + result.exitCode + " err=" + result.stderrText());
+            Log.w(TAG, "Root helper ping failed: exit=" + result.exitCode
+                    + " err=" + result.stderrText());
         }
         return result.ok() && result.stdoutText().contains("uid=0");
     }
@@ -145,10 +124,7 @@ final class RootShell {
 
     static List<RootEntry> list(String path) {
         Result result = run(LIST_TIMEOUT_SECONDS, "list", path);
-        if (!result.ok()) {
-            return Collections.emptyList();
-        }
-        return parseEntries(result.stdoutText());
+        return result.ok() ? parseEntries(result.stdoutText()) : Collections.emptyList();
     }
 
     static long availableBytes(String path) {
@@ -164,66 +140,108 @@ final class RootShell {
     }
 
     static String create(String parentPath, String displayName, boolean directory) throws IOException {
-        Result result = run("create", parentPath, displayName, directory ? "dir" : "file");
-        if (!result.ok()) {
-            throw new IOException(errorMessage("create", result));
-        }
-        return decode(result.stdoutText().trim());
+        return decodedResult("create", run("create", parentPath, displayName, directory ? "dir" : "file"));
     }
 
     static String rename(String path, String displayName) throws IOException {
-        Result result = run("rename", path, displayName);
-        if (!result.ok()) {
-            throw new IOException(errorMessage("rename", result));
-        }
-        return decode(result.stdoutText().trim());
+        return decodedResult("rename", run("rename", path, displayName));
     }
 
     static void delete(String path) throws IOException {
-        Result result = run("delete", path);
-        if (!result.ok()) {
-            throw new IOException(errorMessage("delete", result));
-        }
+        requireSuccess("delete", run("delete", path));
     }
 
     static void copyOut(String sourcePath, File destination, int ownerUid) throws IOException {
-        Result result = run(60, "copyout", sourcePath, destination.getAbsolutePath(), Integer.toString(ownerUid));
-        if (!result.ok()) {
-            throw new IOException(errorMessage("copyout", result));
-        }
+        requireSuccess(
+                "copyout",
+                run(60, "copyout", sourcePath, destination.getAbsolutePath(), Integer.toString(ownerUid)));
     }
 
     static void copyIn(File source, String destinationPath) throws IOException {
-        Result result = run(60, "copyin", source.getAbsolutePath(), destinationPath);
-        if (!result.ok()) {
-            throw new IOException(errorMessage("copyin", result));
-        }
+        requireSuccess("copyin", run(60, "copyin", source.getAbsolutePath(), destinationPath));
     }
 
     static void copy(String sourcePath, String targetParentPath) throws IOException {
-        Result result = run(60, "copy", sourcePath, targetParentPath);
-        if (!result.ok()) {
-            throw new IOException(errorMessage("copy", result));
-        }
+        requireSuccess("copy", run(60, "copy", sourcePath, targetParentPath));
     }
 
     static String move(String sourcePath, String targetParentPath) throws IOException {
-        Result result = run(60, "move", sourcePath, targetParentPath);
-        if (!result.ok()) {
-            throw new IOException(errorMessage("move", result));
+        return decodedResult("move", run(60, "move", sourcePath, targetParentPath));
+    }
+
+    static String encode(String value) {
+        return Base64.encodeToString(value.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+    }
+
+    static String decode(String value) {
+        return new String(Base64.decode(value, Base64.DEFAULT), StandardCharsets.UTF_8);
+    }
+
+    private static Result failureResult(Exception failure) {
+        return new Result(
+                126,
+                new byte[0],
+                failure.toString().getBytes(StandardCharsets.UTF_8),
+                false);
+    }
+
+    private static void closeProcessStreams(Process process) {
+        if (process == null) {
+            return;
         }
+        try {
+            process.getInputStream().close();
+        } catch (IOException ignored) {
+            // Process cleanup is best effort after its result has already been captured.
+        }
+        try {
+            process.getErrorStream().close();
+        } catch (IOException ignored) {
+            // Process cleanup is best effort after its result has already been captured.
+        }
+        try {
+            process.getOutputStream().close();
+        } catch (IOException ignored) {
+            // Process cleanup is best effort after its result has already been captured.
+        }
+    }
+
+    private static String findSuBinary() {
+        String[] candidates = {
+                "/system/bin/su",
+                "/system/xbin/su",
+                "/sbin/su",
+                "/debug_ramdisk/su"
+        };
+        for (String candidate : candidates) {
+            File file = new File(candidate);
+            if (file.isFile() && file.canExecute()) {
+                return candidate;
+            }
+        }
+        return "su";
+    }
+
+    private static String decodedResult(String action, Result result) throws IOException {
+        requireSuccess(action, result);
         return decode(result.stdoutText().trim());
     }
 
+    private static void requireSuccess(String action, Result result) throws IOException {
+        if (!result.ok()) {
+            throw new IOException(errorMessage(action, result));
+        }
+    }
+
     private static String errorMessage(String action, Result result) {
-        String err = result.stderrText().trim();
-        if (err.isEmpty()) {
-            err = result.stdoutText().trim();
+        String error = result.stderrText().trim();
+        if (error.isEmpty()) {
+            error = result.stdoutText().trim();
         }
-        if (err.isEmpty()) {
-            err = result.timedOut ? "timed out" : "exit " + result.exitCode;
+        if (error.isEmpty()) {
+            error = result.timedOut ? "timed out" : "exit " + result.exitCode;
         }
-        return action + " failed: " + err;
+        return action + " failed: " + error;
     }
 
     private static List<RootEntry> parseEntries(String text) {
@@ -237,15 +255,15 @@ final class RootShell {
                 continue;
             }
             try {
-                String type = fields[0];
-                long size = Long.parseLong(fields[1]);
-                long mtimeSeconds = Long.parseLong(fields[2]);
-                String mode = fields[3];
-                String name = decode(fields[4]);
-                String path = decode(fields[5]);
-                result.add(new RootEntry(type, size, mtimeSeconds * 1000L, mode, name, path));
+                result.add(new RootEntry(
+                        fields[0],
+                        Long.parseLong(fields[1]),
+                        Long.parseLong(fields[2]) * 1000L,
+                        fields[3],
+                        decode(fields[4]),
+                        decode(fields[5])));
             } catch (RuntimeException ignored) {
-                // Ignore one malformed record and continue with other files.
+                // Ignore one malformed helper record and continue with other entries.
             }
         }
         return result;
@@ -253,13 +271,13 @@ final class RootShell {
 
     private static Callable<byte[]> readAll(InputStream input) {
         return () -> {
-            try (InputStream in = input; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            try (InputStream source = input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
                 byte[] buffer = new byte[32 * 1024];
                 int read;
-                while ((read = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, read);
+                while ((read = source.read(buffer)) != -1) {
+                    output.write(buffer, 0, read);
                 }
-                return out.toByteArray();
+                return output.toByteArray();
             }
         };
     }
@@ -270,20 +288,12 @@ final class RootShell {
         }
         try {
             return future.get(timeoutSeconds, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException failure) {
             Thread.currentThread().interrupt();
         } catch (ExecutionException | TimeoutException ignored) {
-            // Preserve bounded provider calls even if output collection failed.
+            // Preserve the bounded provider call even if output collection failed.
         }
         return new byte[0];
-    }
-
-    static String encode(String value) {
-        return Base64.encodeToString(value.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
-    }
-
-    static String decode(String value) {
-        return new String(Base64.decode(value, Base64.DEFAULT), StandardCharsets.UTF_8);
     }
 
     private static String shellQuote(String value) {
