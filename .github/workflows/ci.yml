@@ -131,6 +131,8 @@ jobs:
               'tools/rootfs-helper.sh',
           }
           debug_only = {'action.sh', 'tools/ts18-saf-deepdiag.sh'}
+          debug_required = debug_only | {'README.md'}
+          non_runtime = debug_required
           forbidden = {
               'system/etc/sysconfig/ts18-documentsui-saf.xml',
               'system/priv-app/ExternalStorageProvider/ExternalStorageProvider.apk',
@@ -156,10 +158,10 @@ jobs:
                   compressed = [item.filename for item in archive.infolist() if item.compress_type != zipfile.ZIP_STORED]
                   if compressed:
                       raise SystemExit(f'{variant}: non-STORE entries {compressed[:10]}')
-                  if variant == 'final' and debug_only & names:
-                      raise SystemExit(f'final: debug entries present {sorted(debug_only & names)}')
-                  if variant == 'debug' and not debug_only <= names:
-                      raise SystemExit(f'debug: missing diagnostics {sorted(debug_only - names)}')
+                  if variant == 'final' and non_runtime & names:
+                      raise SystemExit(f'final: non-runtime entries present {sorted(non_runtime & names)}')
+                  if variant == 'debug' and not debug_required <= names:
+                      raise SystemExit(f'debug: missing debug entries {sorted(debug_required - names)}')
           print(f'OK {final_path.name} and {debug_path.name}')
           PY
           (cd dist && sha256sum -c "$(basename "${FINAL_SHA}")")
