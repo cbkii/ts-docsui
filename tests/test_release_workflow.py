@@ -46,6 +46,26 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             WORKFLOW,
         )
 
+    def test_remote_tag_and_release_queries_fail_closed(self) -> None:
+        self.assertNotIn("|| true", WORKFLOW)
+        self.assertIn('case "${tag_status}" in', WORKFLOW)
+        self.assertIn("Unable to query remote tag state", WORKFLOW)
+        self.assertIn(
+            'gh api --method GET "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"',
+            WORKFLOW,
+        )
+        self.assertIn("Unable to query GitHub release state", WORKFLOW)
+        self.assertIn("Unable to recheck remote tag state", WORKFLOW)
+
+    def test_provider_signer_check_is_not_duplicated_with_brittle_shell_parsing(self) -> None:
+        self.assertIn(
+            "Provider signer identity matched the tracked baseline during build-root-provider.py.",
+            WORKFLOW,
+        )
+        self.assertNotIn("Signer #1 certificate SHA-256 digest", WORKFLOW)
+        self.assertNotIn("source_cert=", WORKFLOW)
+        self.assertNotIn("built_cert=", WORKFLOW)
+
     def test_source_module_uses_public_stable_update_url(self) -> None:
         self.assertIn(
             "updateJson=https://github.com/cbkii/ts-docsui/releases/latest/download/update.json",
