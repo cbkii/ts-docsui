@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 
 CERT_DIGEST_RE = re.compile(
-    r"^\s*Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F]+)\s*$",
+    r"^\s*(?:Signer #\d+|V[1-4] Signer):\s*certificate SHA-256 digest:\s*([0-9a-fA-F]+)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -73,13 +73,18 @@ def signer_digest(apksigner: str, apk: Path) -> str:
         raise RuntimeError(
             f"apksigner verification failed for {apk}: {combined_output or 'no output'}"
         )
-    match = CERT_DIGEST_RE.search(combined_output)
-    if not match:
+
+    digests = {value.lower() for value in CERT_DIGEST_RE.findall(combined_output)}
+    if not digests:
         preview = combined_output[:1_000] or "no output"
         raise RuntimeError(
             f"apksigner did not report a SHA-256 signer digest for {apk}; output={preview!r}"
         )
-    return match.group(1).lower()
+    if len(digests) != 1:
+        raise RuntimeError(
+            f"apksigner reported multiple signer SHA-256 digests for {apk}: {sorted(digests)}"
+        )
+    return next(iter(digests))
 
 
 def main(argv: list[str] | None = None) -> int:
