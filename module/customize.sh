@@ -1,16 +1,15 @@
 #!/system/bin/sh
-# TS18 Full File Picker installer for Magisk 28 and newer.
-# Installer work uses /data/adb, with /storage/emulated/0 only as a fallback.
+# ts-docsui installer for Magisk 28+ on TS18 Android 10 / API 29.
+# Staging and logs stay under shared Download storage, not /data/adb.
 
 SKIPUNZIP=1
-MODID=ts18_documentsui_saf_full
-OLD_MODID=ts18_docsui_saf
-WORKBASE=/data/adb/${MODID}.install
+MODID=ts-docsui
+OUTPUT_ROOT=/storage/emulated/0/Download/ts-docsui
+WORKBASE=$OUTPUT_ROOT/.install
 STAGE=$WORKBASE/stage
-STATE_DIR=/data/adb/ts18-documentsui-saf
-LOGDIR=$STATE_DIR/logs
-INSTALL_LOG=$LOGDIR/install.log
-CFG=/data/adb/ts18-documentsui-saf.conf
+STATE_DIR=/data/adb/ts-docsui
+INSTALL_LOG=$OUTPUT_ROOT/logs/install.log
+CFG=/data/adb/ts-docsui.conf
 MODULE_VERSION=unknown
 MODULE_VERSION_CODE=unknown
 
@@ -18,19 +17,6 @@ note() { ui_print "$1"; }
 warn() { ui_print "! $1"; }
 stop_install() { abort "STOP: $1"; }
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
-
-choose_workbase() {
-  if mkdir -p /data/adb 2>/dev/null; then
-    return 0
-  fi
-  WORKBASE=/storage/emulated/0/${MODID}.install
-  STAGE=$WORKBASE/stage
-  STATE_DIR=/storage/emulated/0/ts18-documentsui-saf
-  LOGDIR=$STATE_DIR/logs
-  INSTALL_LOG=$LOGDIR/install.log
-  CFG=/storage/emulated/0/ts18-documentsui-saf.conf
-  mkdir -p "$WORKBASE" 2>/dev/null
-}
 
 run_unzip() {
   if have_cmd unzip && unzip "$@"; then return 0; fi
@@ -40,9 +26,13 @@ run_unzip() {
   return 1
 }
 
+zip_has() {
+  run_unzip -l "$ZIPFILE" "$1" 2>/dev/null | grep -Fq "$1"
+}
+
 clean_work() {
   case "$WORKBASE" in
-    /data/adb/${MODID}.install|/storage/emulated/0/${MODID}.install)
+    /storage/emulated/0/Download/ts-docsui/.install)
       rm -rf "$WORKBASE" 2>/dev/null || true
       ;;
   esac
@@ -51,7 +41,8 @@ clean_work() {
 extract_file() {
   source_name=$1
   destination=$2
-  mkdir -p "$(dirname "$destination")" 2>/dev/null || return 1
+  parent=$(dirname "$destination")
+  mkdir -p "$parent" 2>/dev/null || return 1
   rm -f "$destination" 2>/dev/null || true
   run_unzip -p "$ZIPFILE" "$source_name" > "$destination" 2>> "$INSTALL_LOG" || return 1
   case "$source_name" in META-INF/*) return 0 ;; *) [ -s "$destination" ] ;; esac
@@ -73,79 +64,29 @@ read_module_version() {
   case "$MODULE_VERSION_CODE" in ''|*[!0-9]*) MODULE_VERSION_CODE=unknown ;; esac
 }
 
-merge_config() {
-  default_file=$MODPATH/config.default
-  [ -f "$default_file" ] || return 1
-  mkdir -p "$(dirname "$CFG")" 2>/dev/null || return 1
-
-  if [ ! -f "$CFG" ]; then
-    cp -f "$default_file" "$CFG" 2>/dev/null || return 1
-    chmod 0644 "$CFG" 2>/dev/null || true
+install_config() {
+  [ -f "$MODPATH/config.default" ] || return 1
+  mkdir -p /data/adb 2>/dev/null || return 1
+  if [ -f "$CFG" ]; then
+    note "- keeping existing runtime config: $CFG"
     return 0
   fi
-
-  # Pre-schema-2 files legitimately lack this key; suppressed stderr keeps the Magisk UI clean.
-  old_schema=$(sed -n 's/^CONFIG_SCHEMA=//p' "$CFG" 2>/dev/null | head -n 1)
-  case "$old_schema" in ''|*[!0-9]*) old_schema=0 ;; esac
-
-  timestamp=$(date +%Y%m%d%H%M%S 2>/dev/null || echo backup)
-  backup=${CFG}.pre-${MODULE_VERSION_CODE}.$timestamp
-  cp -f "$CFG" "$backup" 2>/dev/null || warn "Could not back up the existing config"
-
-  merged=${CFG}.new
-  cp -f "$default_file" "$merged" 2>/dev/null || return 1
-
-  # Preserve values only for keys that still exist in the new documented config.
-  while IFS='=' read -r key value || [ -n "$key" ]; do
-    case "$key" in ''|'#'*) continue ;; esac
-    case "$key" in *[!A-Z0-9_]*) continue ;; esac
-    grep -q "^${key}=" "$default_file" 2>/dev/null || continue
-    case "$value" in ''|*[!A-Za-z0-9_./:-]*) continue ;; esac
-    if ! sed -i "s|^${key}=.*|${key}=${value}|" "$merged" 2>/dev/null; then
-      warn "Could not preserve runtime config key: $key"
-      # Best-effort removal of our incomplete temporary merge file.
-      rm -f "$merged" 2>/dev/null || true
-      return 1
-    fi
-  done < "$CFG"
-
-  # Schema 2 repairs the v1.0.1 launch regression. Earlier configs used auto mode,
-  # which could hide the proven primary: root after one transient boot query.
-  if [ "$old_schema" -lt 2 ]; then
-    if sed -i \
-      -e 's/^CONFIG_SCHEMA=.*/CONFIG_SCHEMA=2/' \
-      -e 's/^EXTERNAL_ROOT_MODE=.*/EXTERNAL_ROOT_MODE=show/' \
-      -e 's/^FIX_REPAIR_DOCUMENTSUI_DATA_OWNER=.*/FIX_REPAIR_DOCUMENTSUI_DATA_OWNER=1/' \
-      -e 's/^FIX_DISABLE_STALE_TS18_PROVIDER=.*/FIX_DISABLE_STALE_TS18_PROVIDER=1/' \
-      -e 's/^FIX_CLEAR_PICKER_PREFERRED_ACTIVITIES=.*/FIX_CLEAR_PICKER_PREFERRED_ACTIVITIES=1/' \
-      -e 's/^FIX_VERIFY_PICKER_RESOLVER=.*/FIX_VERIFY_PICKER_RESOLVER=1/' \
-      "$merged" 2>/dev/null; then
-      note "- Migrated picker repair settings to schema 2"
-    else
-      warn "Could not apply schema-2 picker repair defaults"
-      # Best-effort removal of our incomplete temporary merge file.
-      rm -f "$merged" 2>/dev/null || true
-      return 1
-    fi
-  fi
-
-  mv -f "$merged" "$CFG" 2>/dev/null || return 1
-  chmod 0644 "$CFG" 2>/dev/null || true
-  return 0
+  cp -f "$MODPATH/config.default" "$CFG" 2>/dev/null || return 1
+  chmod 0644 "$CFG" 2>/dev/null || warn "Could not set runtime config mode"
 }
 
-note "- TS18 Full File Picker"
-note "- Repairs picker intent routing and restores internal/root storage sources"
-note "- Uses /data/adb for installer work"
+note "- ts-docsui"
+note "- Android 10 file picker and root-provider integration for TS18"
+note "- Installer work and logs: $OUTPUT_ROOT"
 
 [ "${MAGISK_VER_CODE:-0}" -ge 28000 ] || stop_install "Magisk 28 or newer is required"
 SDK=$(getprop ro.build.version.sdk 2>/dev/null || echo unknown)
 [ "$SDK" = 29 ] || warn "Designed for Android 10 / SDK 29; detected SDK $SDK"
 
-choose_workbase || stop_install "Cannot create installer work under /data/adb or /storage/emulated/0"
+mkdir -p "$OUTPUT_ROOT/logs" "$STATE_DIR" 2>/dev/null || stop_install "Cannot create Download output and minimal state directories"
 clean_work
-mkdir -p "$STAGE" "$LOGDIR" 2>/dev/null || stop_install "Cannot create installer folders"
-: > "$INSTALL_LOG" 2>/dev/null || true
+mkdir -p "$STAGE" 2>/dev/null || stop_install "Cannot create installer staging under Download"
+: > "$INSTALL_LOG" 2>/dev/null || stop_install "Cannot create installer log under Download"
 
 {
   echo "zip=$ZIPFILE"
@@ -160,15 +101,21 @@ case "$MODPATH" in
     rm -rf "$MODPATH"/* 2>/dev/null || true
     ;;
   *)
-    warn "Unexpected module path: $MODPATH; old files were not cleared"
+    stop_install "Unexpected module path: $MODPATH"
     ;;
 esac
 mkdir -p "$MODPATH" 2>/dev/null || stop_install "Cannot create module directory"
 
-for file in module.prop config.default customize.sh service.sh post-fs-data.sh uninstall.sh action.sh README.md; do
+for file in module.prop config.default customize.sh service.sh post-fs-data.sh uninstall.sh README.md; do
   note "- extracting $file"
   extract_file "$file" "$MODPATH/$file" || stop_install "Failed to extract $file"
 done
+
+if zip_has action.sh; then
+  note "- extracting debug action"
+  extract_file action.sh "$MODPATH/action.sh" || stop_install "Failed to extract action.sh"
+fi
+
 for directory in system tools; do
   note "- extracting $directory"
   extract_tree "$directory" || stop_install "Failed to extract $directory"
@@ -181,26 +128,23 @@ echo "version=$MODULE_VERSION versionCode=$MODULE_VERSION_CODE" >> "$INSTALL_LOG
 [ -s "$MODPATH/system/priv-app/DocumentsUI/DocumentsUI.apk" ] || stop_install "DocumentsUI.apk is missing"
 [ -s "$MODPATH/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk" ] || stop_install "TS18RootFileProvider.apk is missing"
 [ -f "$MODPATH/tools/rootfs-helper.sh" ] || stop_install "Root helper is missing"
-[ -f "$MODPATH/tools/ts18-saf-deepdiag.sh" ] || stop_install "Diagnostics script is missing"
-
-merge_config || warn "Could not merge the runtime config; module defaults will be used"
-
-# Remove a short-lived alternate module ID so both overlays cannot run together.
-for stale in "/data/adb/modules/$OLD_MODID" "/data/adb/modules_update/$OLD_MODID"; do
-  [ -d "$stale" ] || continue
-  case "$stale" in /data/adb/modules/$OLD_MODID|/data/adb/modules_update/$OLD_MODID) rm -rf "$stale" 2>/dev/null || true ;; esac
-done
+install_config || stop_install "Could not initialise $CFG"
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644 u:object_r:system_file:s0
-for script in service.sh post-fs-data.sh uninstall.sh action.sh; do
+for script in service.sh post-fs-data.sh uninstall.sh; do
   set_perm "$MODPATH/$script" 0 0 0755 u:object_r:system_file:s0
 done
+[ ! -f "$MODPATH/action.sh" ] || set_perm "$MODPATH/action.sh" 0 0 0755 u:object_r:system_file:s0
 set_perm_recursive "$MODPATH/tools" 0 0 0755 0755 u:object_r:system_file:s0
 set_perm "$MODPATH/system/priv-app/DocumentsUI/DocumentsUI.apk" 0 0 0644 u:object_r:system_file:s0
 set_perm "$MODPATH/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk" 0 0 0644 u:object_r:system_file:s0
 
+if [ -f "$MODPATH/tools/ts18-saf-deepdiag.sh" ]; then
+  note "- Debug variant installed; Magisk Action exports diagnostics under Download/ts-docsui/diagnostics"
+else
+  note "- Final variant installed; diagnostic collectors are not included"
+fi
+
 clean_work
 note "- Installed. Reboot is required."
-note "- After reboot picker intents should resolve to DocumentsUI."
-note "- Internal storage is always shown; root-only content remains a separate source."
-note "- Magisk Action creates diagnostics in Download/TS18-SAF-Diagnostics."
+note "- Internal storage remains the stock Android provider; root-only paths use the separate root provider."
