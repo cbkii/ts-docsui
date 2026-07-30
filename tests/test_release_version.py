@@ -18,6 +18,18 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertEqual(result["release_version_code"], "101")
         self.assertEqual(result["version_source"], "auto-patch")
 
+    def test_blank_input_resumes_current_untagged_release(self) -> None:
+        result = resolve_release(
+            current_version="v1.3.1",
+            current_version_code="131",
+            tags=["v1.3.0"],
+        )
+        self.assertEqual(result["release_tag"], "v1.3.1")
+        self.assertEqual(result["release_version_code"], "131")
+        self.assertEqual(result["version_source"], "resume-current-untagged")
+        self.assertEqual(result["version_code_source"], "current-version")
+        self.assertFalse(result["metadata_change"])
+
     def test_latest_tag_wins_as_auto_bump_base(self) -> None:
         result = resolve_release(
             current_version="v1.0.0",
