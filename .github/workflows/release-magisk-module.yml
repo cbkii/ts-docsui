@@ -6,12 +6,12 @@ run-name: >-
   workflow_dispatch:
     inputs:
       version_tag:
-        description: 'Release version, for example v1.2.3. Leave blank to increment the latest patch version.'
+        description: 'Release version, for example v1.2.3. Leave blank to increment or resume an untagged prepared version.'
         required: false
         default: ''
         type: string
       version_code:
-        description: 'Magisk version code. Leave blank to increment the current code by one.'
+        description: 'Magisk version code. Leave blank to increment or resume the prepared version code.'
         required: false
         default: ''
         type: string
@@ -45,7 +45,7 @@ jobs:
   release:
     name: Version, build, tag, and publish both variants
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
@@ -118,9 +118,9 @@ jobs:
               echo "::error::Tag and release ${RELEASE_TAG} exist. Enable replace_existing_assets only for this exact tag."
               exit 1
             fi
-            echo "tagged_source=true" >>"${GITHUB_OUTPUT}"
+            echo 'tagged_source=true' >>"${GITHUB_OUTPUT}"
             echo "existing_release=${release_exists}" >>"${GITHUB_OUTPUT}"
-            echo "new_release=false" >>"${GITHUB_OUTPUT}"
+            echo 'new_release=false' >>"${GITHUB_OUTPUT}"
           else
             [[ "${release_exists}" != true ]] || { echo '::error::Release collision without tag.'; exit 1; }
             echo 'tagged_source=false' >>"${GITHUB_OUTPUT}"
@@ -128,8 +128,8 @@ jobs:
             echo 'new_release=true' >>"${GITHUB_OUTPUT}"
           fi
 
-      - name: Prepare exact release source
-        id: source
+      - name: Prepare exact release metadata
+        id: metadata
         shell: bash
         env:
           TAGGED_SOURCE: ${{ steps.collision.outputs.tagged_source }}
@@ -138,9 +138,6 @@ jobs:
           INPUT_VERSION_CODE: ${{ inputs.version_code }}
         run: |
           set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
           if [[ "${TAGGED_SOURCE}" == true ]]; then
             git checkout --detach "${RELEASE_TAG}"
             source_version="$(sed -n 's/^version=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
@@ -154,18 +151,11 @@ jobs:
               --version-tag "${RELEASE_TAG}" \
               --version-code "${RELEASE_VERSION_CODE}" \
               --apply
-            if ! git diff --quiet -- module/module.prop; then
-              git add module/module.prop
-              git commit -m "chore(release): prepare ${RELEASE_TAG}"
-              git push origin "HEAD:${GITHUB_REF_NAME}"
-            fi
             source_version="${RELEASE_TAG}"
             source_code="${RELEASE_VERSION_CODE}"
           fi
-
           echo "release_version=${source_version#v}" >>"${GITHUB_OUTPUT}"
           echo "release_version_code=${source_code}" >>"${GITHUB_OUTPUT}"
-          echo "release_commit=$(git rev-parse HEAD)" >>"${GITHUB_OUTPUT}"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -185,26 +175,53 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build signed root provider
-        run: python3 scripts/build-root-provider.py --repo-root . --gradle gradle --timeout 900
+        id: provider
+        shell: bash
+        env:
+          TAGGED_SOURCE: ${{ steps.collision.outputs.tagged_source }}
+        run: |
+          set -euo pipefail
+          mkdir -p .build
+          python3 scripts/build-root-provider.py --repo-root . --gradle gradle --timeout 900
+          module_apk='module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk'
+          if [[ "${TAGGED_SOURCE}" == true ]]; then
+            cp -f "${module_apk}" .build/rebuilt-TS18RootFileProvider.apk
+            git checkout -- "${module_apk}"
+            echo 'built_apk=.build/rebuilt-TS18RootFileProvider.apk' >>"${GITHUB_OUTPUT}"
+          else
+            echo "built_apk=${module_apk}" >>"${GITHUB_OUTPUT}"
+          fi
 
-      - name: Validate source module and provider version
+      - name: Validate source module and provider versions
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
-          RELEASE_VERSION: ${{ steps.source.outputs.release_version }}
-          RELEASE_VERSION_CODE: ${{ steps.source.outputs.release_version_code }}
+          RELEASE_VERSION: ${{ steps.metadata.outputs.release_version }}
+          RELEASE_VERSION_CODE: ${{ steps.metadata.outputs.release_version_code }}
+          BUILT_APK: ${{ steps.provider.outputs.built_apk }}
         run: |
           set -euo pipefail
           find module -type f -name '*.sh' -print -exec sh -n {} ';'
           sh -n module/META-INF/com/google/android/update-binary
           python3 scripts/validate-module.py --module-dir module --expected-version "${RELEASE_TAG}" --expected-version-code "${RELEASE_VERSION_CODE}"
+
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           aapt_path="$(find "${sdk_root}/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
-          badging="$(${aapt_path} dump badging module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk | head -n1)"
-          provider_code="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<<"${badging}")"
-          provider_name="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<<"${badging}")"
-          [[ "${provider_code}" == "${RELEASE_VERSION_CODE}" ]]
-          [[ "${provider_name}" == "${RELEASE_VERSION}" ]]
+          apksigner_path="$(find "${sdk_root}/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n1)"
+          [[ -x "${aapt_path}" && -x "${apksigner_path}" ]] || { echo '::error::Android build tools are incomplete.'; exit 1; }
+
+          source_apk='module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk'
+          for apk in "${source_apk}" "${BUILT_APK}"; do
+            badging="$(${aapt_path} dump badging "${apk}" | head -n1)"
+            provider_code="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<<"${badging}")"
+            provider_name="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<<"${badging}")"
+            [[ "${provider_code}" == "${RELEASE_VERSION_CODE}" ]] || { echo "::error::${apk} versionCode ${provider_code} != ${RELEASE_VERSION_CODE}"; exit 1; }
+            [[ "${provider_name}" == "${RELEASE_VERSION}" ]] || { echo "::error::${apk} versionName ${provider_name} != ${RELEASE_VERSION}"; exit 1; }
+            "${apksigner_path}" verify --verbose "${apk}"
+          done
+          source_cert="$(${apksigner_path} verify --print-certs "${source_apk}" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1)"
+          built_cert="$(${apksigner_path} verify --print-certs "${BUILT_APK}" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1)"
+          [[ -n "${source_cert}" && "${source_cert}" == "${built_cert}" ]] || { echo '::error::Tracked and rebuilt provider signing certificates differ.'; exit 1; }
 
       - name: Build lean final module
         id: final
@@ -214,12 +231,13 @@ jobs:
         id: debug
         run: python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --variant debug --github-output "${GITHUB_OUTPUT}"
 
-      - name: Verify variant checksums and generate update metadata
+      - name: Verify checksums and generate both update manifests
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
           FINAL_NAME: ${{ steps.final.outputs.zip_name }}
           FINAL_SHA_PATH: ${{ steps.final.outputs.sha256_path }}
+          DEBUG_NAME: ${{ steps.debug.outputs.zip_name }}
           DEBUG_SHA_PATH: ${{ steps.debug.outputs.sha256_path }}
         run: |
           set -euo pipefail
@@ -230,13 +248,77 @@ jobs:
             --repository "${GITHUB_REPOSITORY}" \
             --tag "${RELEASE_TAG}" \
             --zip-name "${FINAL_NAME}" \
+            --variant final \
             --out dist/update.json
+          python3 scripts/make-update-json.py \
+            --module-dir module \
+            --repository "${GITHUB_REPOSITORY}" \
+            --tag "${RELEASE_TAG}" \
+            --zip-name "${DEBUG_NAME}" \
+            --variant debug \
+            --out dist/update-debug.json
+
+      - name: Commit exact new release source
+        id: source
+        shell: bash
+        env:
+          TAGGED_SOURCE: ${{ steps.collision.outputs.tagged_source }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          module_prop='module/module.prop'
+          provider_apk='module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk'
+          if [[ "${TAGGED_SOURCE}" == true ]]; then
+            git diff --quiet || { echo '::error::Exact tagged source was modified during rebuild validation.'; git status --short; exit 1; }
+          else
+            unexpected="$(git diff --name-only | grep -Ev "^(${module_prop}|${provider_apk})$" || true)"
+            [[ -z "${unexpected}" ]] || { echo '::error::Unexpected tracked release changes:'; printf '%s\n' "${unexpected}"; exit 1; }
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add -f -- "${module_prop}" "${provider_apk}"
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(release): prepare ${RELEASE_TAG}"
+              git push origin "HEAD:${GITHUB_REF_NAME}"
+            fi
+            git diff --quiet || { echo '::error::Release source remains dirty after commit.'; git status --short; exit 1; }
+          fi
+          echo "release_commit=$(git rev-parse HEAD)" >>"${GITHUB_OUTPUT}"
+
+      - name: Verify artifacts match committed release source
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ steps.source.outputs.release_commit }}
+          FINAL_ZIP: ${{ steps.final.outputs.zip_path }}
+          DEBUG_ZIP: ${{ steps.debug.outputs.zip_path }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${RELEASE_COMMIT}" ]] || { echo '::error::Release source moved after packaging.'; exit 1; }
+          python3 - "${FINAL_ZIP}" "${DEBUG_ZIP}" <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          final_zip, debug_zip = map(Path, sys.argv[1:])
+          source_prop = Path('module/module.prop').read_text(encoding='utf-8')
+          source_apk = Path('module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk').read_bytes()
+          debug_prop = source_prop.replace(
+              'updateJson=https://github.com/cbkii/ts-docsui/releases/latest/download/update.json',
+              'updateJson=https://github.com/cbkii/ts-docsui/releases/latest/download/update-debug.json',
+          )
+          for path, expected_prop in ((final_zip, source_prop), (debug_zip, debug_prop)):
+              with zipfile.ZipFile(path, allowZip64=False) as archive:
+                  if archive.read('module.prop').decode('utf-8') != expected_prop:
+                      raise SystemExit(f'{path.name}: module.prop differs from committed source/channel contract')
+                  if archive.read('system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk') != source_apk:
+                      raise SystemExit(f'{path.name}: provider APK differs from committed source')
+          print('OK release ZIPs match committed source')
+          PY
 
       - name: Generate release notes
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
-          RELEASE_VERSION_CODE: ${{ steps.source.outputs.release_version_code }}
+          RELEASE_VERSION_CODE: ${{ steps.metadata.outputs.release_version_code }}
           RELEASE_COMMIT: ${{ steps.source.outputs.release_commit }}
           PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
           FINAL_NAME: ${{ steps.final.outputs.zip_name }}
@@ -257,6 +339,7 @@ jobs:
             echo "- Debug SHA-256: \`${DEBUG_SHA}\`"
             echo
             echo 'The final module contains runtime components only. The debug module adds the bounded diagnostics collector and Magisk Action entry point.'
+            echo 'Both variants expose their own Magisk in-app update channel.'
             echo
             echo '## Changes'
             if [[ -n "${PREVIOUS_TAG}" && "${PREVIOUS_TAG}" != "${RELEASE_TAG}" ]]; then
@@ -290,6 +373,7 @@ jobs:
             ${{ steps.debug.outputs.zip_path }}
             ${{ steps.debug.outputs.sha256_path }}
             dist/update.json
+            dist/update-debug.json
             dist/release-notes.md
           if-no-files-found: error
           retention-days: 30
@@ -307,7 +391,7 @@ jobs:
           PRERELEASE: ${{ inputs.prerelease }}
         run: |
           set -euo pipefail
-          assets=("${FINAL_ZIP}" "${FINAL_SHA}" "${DEBUG_ZIP}" "${DEBUG_SHA}" dist/update.json)
+          assets=("${FINAL_ZIP}" "${FINAL_SHA}" "${DEBUG_ZIP}" "${DEBUG_SHA}" dist/update.json dist/update-debug.json)
           if [[ "${EXISTING_RELEASE}" == true ]]; then
             gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
             exit 0
@@ -327,9 +411,10 @@ jobs:
             echo '## ts-docsui release'
             echo
             echo "- Version: \`${{ steps.version.outputs.release_tag }}\`"
-            echo "- Version code: \`${{ steps.source.outputs.release_version_code }}\`"
+            echo "- Version code: \`${{ steps.metadata.outputs.release_version_code }}\`"
             echo "- Source commit: \`${{ steps.source.outputs.release_commit }}\`"
             echo "- Final: \`${{ steps.final.outputs.zip_name }}\`"
             echo "- Debug: \`${{ steps.debug.outputs.zip_name }}\`"
+            echo '- Update manifests: `update.json`, `update-debug.json`'
             [[ -z "${ARTIFACT_URL}" ]] || echo "- Workflow artifacts: [Download both variants](${ARTIFACT_URL})"
           } >>"${GITHUB_STEP_SUMMARY}"
