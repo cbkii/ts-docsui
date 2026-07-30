@@ -107,6 +107,10 @@ jobs:
           git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1 && tag_exists=true || true
           gh release view "${RELEASE_TAG}" >/dev/null 2>&1 && release_exists=true || true
           [[ "${release_exists}" != true || "${tag_exists}" == true ]] || { echo '::error::Release exists without its immutable tag.'; exit 1; }
+          if [[ "${REPLACE_EXISTING_ASSETS}" == true && ( "${tag_exists}" != true || "${release_exists}" != true ) ]]; then
+            echo '::error::replace_existing_assets requires an existing exact tag and release.'
+            exit 1
+          fi
 
           if [[ "${tag_exists}" == true ]]; then
             [[ -n "$(printf '%s' "${INPUT_VERSION_TAG}" | xargs)" ]] || { echo "::error::Automatically resolved tag ${RELEASE_TAG} already exists."; exit 1; }
