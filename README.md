@@ -2,77 +2,75 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [Русский](README.ru.md)
 
-This Magisk module fixes the Android file picker on supported TS18/Topway car head units.
-
-## Why this module exists
-
-On some TS18 units, the file picker shows only **Downloads** and USB storage. Apps cannot choose files or folders from the rest of the internal storage.
-
-This module restores the normal Android 10 file picker and adds an extra root file source.
+`ts-docsui` is a Magisk module for supported Topway TS18 Android 10 head units. It restores the Android system file picker, exposes normal internal storage and adds a separate Magisk-backed root file source.
 
 ## What it provides
 
-- Access to all normal internal storage under `/storage/emulated/0`.
-- An extra **Internal storage (full)** entry.
-- A **Root file system** entry for files that need Magisk root access.
-- TS18 USB storage when a USB drive is connected.
-- File and folder selection for apps that use the Android system picker.
+- Normal internal storage under `/storage/emulated/0` through Android's stock ExternalStorageProvider.
+- An **Internal storage (full)** source.
+- A **Root file system** source for root-only paths.
+- TS18 USB storage when a compatible USB volume is mounted.
+- File and folder selection for apps that use Android SAF.
 
 > [!TIP]
-> The file picker may falsely display directory contents as empty or inaccessible...
-> 🔄 Try **refreshing** the current folder view;
-> initial loading of a directory can be buggy 🐛
+> A TS18 directory can initially appear empty even when it is not. Refresh the current folder before treating that result as a provider failure.
 
 ## Requirements
 
-- A Topway unit with Android 10; tested on **TS18** model.
-- UIS8581A / SP9863A TS18 hardware, or equivalent.
+- Topway TS18 / UIS8581A / SP9863A hardware matching the supported Android 10 platform.
+- Android 10 / API 29.
 - Magisk 28 or later already working.
 
-This module has not been tested on TS10, TS10S, or unrelated units that only look similar.
+Do not assume TS10, TS10S or visually similar units are interchangeable. This module does not install Magisk or root the head unit.
 
-This module does not install Magisk and does not root the head unit.
+## Release variants
 
-## Source of the rooted firmware
+Every release contains two installable ZIPs with the same runtime implementation:
 
-The Magisk-rooted TS18 firmware used with this project is sourced from the [Topway TS10 and TS18 community topic on 4PDA](https://4pda.to/forum/index.php?showtopic=1015856).
+- `ts-docsui-v<versionCode>.zip` — the lean final module. It contains essential runtime components only.
+- `ts-docsui-debug-v<versionCode>.zip` — the debug module. It additionally contains the bounded diagnostics collector and a Magisk **Action** entry point.
 
-4PDA is a third-party community. This project does not create, host, or verify the firmware found there.
-> [!CAUTION]
-> Only use firmware that exactly matches your unit's system version, board, screen, panel, and boot configuration. The wrong firmware can stop the unit from starting. Make a full backup before changing firmware. Stop when the match is not certain.
-
-You do not need to reinstall firmware when Magisk already works on your unit.
+Use the final module for normal operation. Install the debug module only while collecting evidence or diagnosing a problem. Do not install both at once; both use the module ID `ts-docsui`.
 
 ## Installation
 
-1. Download the module ZIP from the [latest release](https://github.com/cbkii/ts-docsui/releases/latest).
-2. Open **Magisk**.
-3. Open **Modules** and choose **Install from storage**.
-4. Select the downloaded ZIP.
-5. Reboot the head unit.
+1. Download one ZIP from the [latest release](https://github.com/cbkii/ts-docsui/releases/latest).
+2. In Magisk, open **Modules** and choose **Install from storage**.
+3. Select the ZIP.
+4. Reboot the head unit.
 
-After the reboot, open a file picker from an app. You should see normal internal storage, full internal storage, and the root file system. USB entries appear only when USB storage is connected.
+After reboot, open a file picker from an app. Normal internal storage should remain the stock Android source. The separate full/root entries are supplied by the root provider. USB entries appear only while USB storage is mounted.
 
-## When it does not work
+## Diagnostics
 
-1. First, try **refreshing** the current folder view, initial loading of a directory can be buggy.
-2. Confirm that the unit is TS18, Android 10, and already rooted with Magisk.
-3. Reboot once after installing or updating the module.
-4. In Magisk, open this module and press **Action**.
-5. Find the diagnostic ZIP in:
+Diagnostics are included only in the debug variant. Press **Action** in Magisk, or run:
 
-```text
-/storage/emulated/0/Download/TS18-SAF-Diagnostics/
+```sh
+su -c '/data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh full'
 ```
 
-Attach that ZIP to a new GitHub issue. Do not install different firmware only to test this module.
+All diagnostic work, logs and verified archives stay under:
+
+```text
+/storage/emulated/0/Download/ts-docsui/diagnostics/
+```
+
+Normal service and installer logs are kept under:
+
+```text
+/storage/emulated/0/Download/ts-docsui/logs/
+```
+
+`/data/adb/ts-docsui` is reserved for the small helper, generated preferences and reconciliation markers required at runtime.
 
 ## Safety
 
-The module is systemless. It does not flash boot, MCU, CAN, LCD, logo, or firmware partitions.
+The module is systemless. It does not flash boot, MCU, CAN, LCD, logo or firmware partitions.
 
-The **Root file system** entry has real root access. Do not change or delete files that you do not understand. Read-only system partitions remain read-only.
+The root source has real root access, but root does not make read-only device-mapper mounts writable. Do not modify protected system, vendor, metadata, Magisk or Android state paths.
+
+The rooted firmware used by this project came from the [Topway TS10 and TS18 community topic on 4PDA](https://4pda.to/forum/index.php?showtopic=1015856). That firmware is external to this repository and is not proof that another unit is compatible.
 
 ## Technical information
 
-Developers and advanced users should read the [technical and developer guide](docs/DEVELOPMENT.md).
+Developers and advanced users should read the [technical guide](docs/DEVELOPMENT.md) and [physical TS18 acceptance procedure](docs/DEVICE_ACCEPTANCE.md).
