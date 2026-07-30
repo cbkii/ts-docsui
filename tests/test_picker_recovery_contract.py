@@ -5,6 +5,20 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OLD_MODULE_ID = "ts18_documentsui_" + "saf_full"
+TEXT_SUFFIXES = {
+    "",
+    ".default",
+    ".gradle",
+    ".java",
+    ".json",
+    ".md",
+    ".prop",
+    ".py",
+    ".sh",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
 
 
 class PickerRecoveryContractTests(unittest.TestCase):
@@ -24,12 +38,21 @@ class PickerRecoveryContractTests(unittest.TestCase):
                     return source[brace + 1 : index]
         self.fail(f"unterminated method: {signature}")
 
+    def text_files(self):
+        for path in REPO_ROOT.rglob("*"):
+            if not path.is_file():
+                continue
+            if ".git" in path.parts or "__pycache__" in path.parts:
+                continue
+            if path.suffix.lower() not in TEXT_SUFFIXES:
+                continue
+            yield path
+
     def test_module_identity_is_simple_and_old_id_is_absent(self) -> None:
         self.assertIn("id=ts-docsui", self.read("module/module.prop"))
         all_text = "\n".join(
             path.read_text(encoding="utf-8", errors="ignore")
-            for path in REPO_ROOT.rglob("*")
-            if path.is_file() and ".git" not in path.parts
+            for path in self.text_files()
         )
         self.assertNotIn(OLD_MODULE_ID, all_text)
 
@@ -123,6 +146,12 @@ class PickerRecoveryContractTests(unittest.TestCase):
         self.assertIn('"ts-docsui-debug"', builder)
         self.assertIn('"ts-docsui"', builder)
         self.assertIn("DEBUG_ONLY", builder)
+
+    def test_exact_tag_asset_rebuild_allows_older_immutable_release(self) -> None:
+        workflow = self.read(".github/workflows/release-magisk-module.yml")
+        self.assertIn("replace_existing_assets", workflow)
+        self.assertIn("--allow-lower-version", workflow)
+        self.assertIn('extra_args+=(--allow-lower-version)', workflow)
 
 
 if __name__ == "__main__":
