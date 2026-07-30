@@ -30,6 +30,11 @@ REQUIRED_ZIP_ENTRIES = {
     "tools/rootfs-helper.sh",
 }
 DEBUG_ONLY_ENTRIES = {"action.sh", "tools/ts18-saf-deepdiag.sh"}
+DEBUG_REQUIRED_ENTRIES = DEBUG_ONLY_ENTRIES | {"README.md"}
+UPDATE_JSON_URLS = {
+    "final": "https://github.com/cbkii/ts-docsui/releases/latest/download/update.json",
+    "debug": "https://github.com/cbkii/ts-docsui/releases/latest/download/update-debug.json",
+}
 ZIP64_EXTRA_FIELD_ID = 0x0001
 ZIP64_UINT16_SENTINEL = 0xFFFF
 ZIP64_UINT32_SENTINEL = 0xFFFFFFFF
@@ -49,8 +54,9 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def expected_zip_name(props: dict[str, str]) -> str:
-    return f"ts-docsui-v{props['versionCode']}.zip"
+def expected_zip_name(props: dict[str, str], variant: str = "final") -> str:
+    prefix = "ts-docsui-debug" if variant == "debug" else "ts-docsui"
+    return f"{prefix}-v{props['versionCode']}.zip"
 
 
 def parse_checksum_file(path: Path) -> tuple[str, str]:
@@ -132,7 +138,9 @@ def reject_zip64_members(zip_path: Path, infos: Iterable[zipfile.ZipInfo]) -> No
                 raise ValueError(f"ZIP64 extra field is not allowed for {info.filename!r}")
 
 
-def read_zip_module_properties(zip_path: Path) -> tuple[dict[str, str], set[str]]:
+def read_zip_module_properties(zip_path: Path, *, variant: str = "final") -> tuple[dict[str, str], set[str]]:
+    if variant not in UPDATE_JSON_URLS:
+        raise ValueError(f"unknown release variant: {variant!r}")
     try:
         with zipfile.ZipFile(zip_path, allowZip64=False) as archive:
             bad = archive.testzip()
@@ -145,16 +153,27 @@ def read_zip_module_properties(zip_path: Path) -> tuple[dict[str, str], set[str]
             missing = REQUIRED_ZIP_ENTRIES - names
             if missing:
                 raise ValueError(f"missing ZIP entries: {sorted(missing)}")
-            debug_present = DEBUG_ONLY_ENTRIES & names
-            if debug_present:
-                raise ValueError(f"final release ZIP contains debug-only entries: {sorted(debug_present)}")
+            if variant == "final":
+                debug_present = DEBUG_REQUIRED_ENTRIES & names
+                if debug_present:
+                    raise ValueError(f"final release ZIP contains debug-only entries: {sorted(debug_present)}")
+            else:
+                missing_debug = DEBUG_REQUIRED_ENTRIES - names
+                if missing_debug:
+                    raise ValueError(f"debug release ZIP is missing debug entries: {sorted(missing_debug)}")
             compressed = [item.filename for item in infos if item.compress_type != zipfile.ZIP_STORED]
             if compressed:
                 raise ValueError(f"non-STORE ZIP entries: {compressed[:10]}")
             text = archive.read("module.prop").decode("utf-8", errors="strict")
     except (zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
         raise ValueError(f"invalid or ZIP64 archive: {zip_path}") from exc
-    return parse_properties_text(text, source=f"{zip_path}!/module.prop"), names
+    props = parse_properties_text(text, source=f"{zip_path}!/module.prop")
+    expected_update = UPDATE_JSON_URLS[variant]
+    if props.get("updateJson") != expected_update:
+        raise ValueError(
+            f"{variant} ZIP updateJson {props.get('updateJson')!r} does not match {expected_update!r}"
+        )
+    return props, names
 
 
 def build_payload(*, props: dict[str, str], repository: str, tag: str, zip_name: str) -> dict[str, Any]:
@@ -184,22 +203,32 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def validate_release_assets(
-    *, module_dir: Path, repository: str, tag: str, zip_path: Path, checksum_path: Path
+    *,
+    module_dir: Path,
+    repository: str,
+    tag: str,
+    zip_path: Path,
+    checksum_path: Path,
+    variant: str = "final",
 ) -> tuple[dict[str, Any], str]:
+    if variant not in UPDATE_JSON_URLS:
+        raise ValueError(f"unknown release variant: {variant!r}")
     props = parse_properties(module_dir / "module.prop")
-    required = ("id", "version", "versionCode")
+    required = ("id", "version", "versionCode", "updateJson")
     missing_props = [key for key in required if not props.get(key)]
     if missing_props:
         raise ValueError(f"module.prop is missing required properties: {missing_props}")
     if props["id"] != "ts-docsui":
         raise ValueError(f"module id must be ts-docsui, found {props['id']!r}")
+    if props["updateJson"] != UPDATE_JSON_URLS["final"]:
+        raise ValueError("source module.prop must use the stable final update channel")
     canonical_tag = parse_semver(tag, field="tag").tag
     module_tag = parse_semver(props["version"], field="module version").tag
     if canonical_tag != tag or module_tag != tag:
         raise ValueError(f"module/tag mismatch: module={module_tag!r} tag={tag!r}")
     if not props["versionCode"].isdigit() or int(props["versionCode"], 10) < 1:
         raise ValueError(f"module versionCode must be a positive integer: {props['versionCode']!r}")
-    expected_name = expected_zip_name(props)
+    expected_name = expected_zip_name(props, variant)
     if zip_path.name != expected_name:
         raise ValueError(f"ZIP name {zip_path.name!r} does not match expected {expected_name!r}")
     if not zip_path.is_file() or not checksum_path.is_file():
@@ -210,8 +239,8 @@ def validate_release_assets(
     actual_digest = sha256(zip_path)
     if actual_digest != expected_digest:
         raise ValueError(f"ZIP SHA-256 mismatch: checksum has {expected_digest}, actual is {actual_digest}")
-    embedded_props, _ = read_zip_module_properties(zip_path)
-    for key in required:
+    embedded_props, _ = read_zip_module_properties(zip_path, variant=variant)
+    for key in ("id", "version", "versionCode"):
         if embedded_props.get(key) != props[key]:
             raise ValueError(f"ZIP module.prop {key} does not match source")
-    return build_payload(props=props, repository=repository, tag=tag, zip_name=zip_path.name), actual_digest
+    return build_payload(props=embedded_props, repository=repository, tag=tag, zip_name=zip_path.name), actual_digest
