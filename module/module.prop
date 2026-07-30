@@ -4,3 +4,4 @@ version=v1.3.0
 versionCode=130
 author=cbkii
 description=Shows all internal storage and adds a Magisk-root file provider for the full device.
+updateJson=https://github.com/cbkii/ts-docsui/releases/latest/download/update.json
