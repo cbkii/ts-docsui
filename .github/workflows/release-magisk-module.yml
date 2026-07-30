@@ -78,14 +78,20 @@ jobs:
         env:
           INPUT_VERSION_TAG: ${{ inputs.version_tag }}
           INPUT_VERSION_CODE: ${{ inputs.version_code }}
+          REPLACE_EXISTING_ASSETS: ${{ inputs.replace_existing_assets }}
         run: |
           set -euo pipefail
+          extra_args=()
+          if [[ "${REPLACE_EXISTING_ASSETS}" == true ]]; then
+            extra_args+=(--allow-lower-version)
+          fi
           python3 scripts/release_version.py \
             --repo-root . \
             --module-prop module/module.prop \
             --version-tag "${INPUT_VERSION_TAG}" \
             --version-code "${INPUT_VERSION_CODE}" \
-            --github-output "${GITHUB_OUTPUT}"
+            --github-output "${GITHUB_OUTPUT}" \
+            "${extra_args[@]}"
 
       - name: Check tag and release collisions
         id: collision
