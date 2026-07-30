@@ -1,4 +1,4 @@
-name: Release Magisk module
+name: Release ts-docsui modules
 run-name: >-
   release • ${{ inputs.version_tag || 'auto patch' }}
 
@@ -26,7 +26,7 @@ run-name: >-
         default: false
         type: boolean
       replace_existing_assets:
-        description: 'Replace module assets only when this exact tag and release already exist.'
+        description: 'Replace assets only when this exact tag and release already exist.'
         required: true
         default: false
         type: boolean
@@ -43,7 +43,7 @@ concurrency:
 
 jobs:
   release:
-    name: Version, build, tag, and publish
+    name: Version, build, tag, and publish both variants
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -63,23 +63,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
-            echo "::error::Manual releases must be dispatched from a branch."
-            exit 1
-          fi
-          if [[ "${GITHUB_REF_NAME}" != "${{ github.event.repository.default_branch }}" ]]; then
-            echo "::error::Run this workflow from the default branch '${{ github.event.repository.default_branch }}', not '${GITHUB_REF_NAME}'."
-            exit 1
-          fi
+          [[ "${GITHUB_REF_TYPE}" == branch ]] || { echo '::error::Manual releases must be dispatched from a branch.'; exit 1; }
+          default_branch='${{ github.event.repository.default_branch }}'
+          [[ "${GITHUB_REF_NAME}" == "${default_branch}" ]] || { echo "::error::Dispatch from ${default_branch}, not ${GITHUB_REF_NAME}."; exit 1; }
           git fetch --force --tags origin "+refs/heads/${GITHUB_REF_NAME}:refs/remotes/origin/${GITHUB_REF_NAME}"
-          local_head="$(git rev-parse HEAD)"
-          remote_head="$(git rev-parse "origin/${GITHUB_REF_NAME}")"
-          if [[ "${local_head}" != "${remote_head}" ]]; then
-            echo "::error::Release checkout is stale. Re-run from the latest ${GITHUB_REF_NAME}."
-            echo "::error::Local HEAD:  ${local_head}"
-            echo "::error::Remote HEAD: ${remote_head}"
-            exit 1
-          fi
+          [[ "$(git rev-parse HEAD)" == "$(git rev-parse "origin/${GITHUB_REF_NAME}")" ]] || { echo '::error::Release checkout is stale.'; exit 1; }
           ruby -e 'require "yaml"; ARGV.each { |f| Psych.safe_load(File.read(f), permitted_classes: [], permitted_symbols: [], aliases: false); puts "OK #{f}" }' .github/workflows/*.yml
           python3 -m compileall -q scripts tests
           python3 -m unittest discover -s tests -p 'test_*.py' -v
@@ -92,17 +80,12 @@ jobs:
           INPUT_VERSION_CODE: ${{ inputs.version_code }}
         run: |
           set -euo pipefail
-          extra_args=()
-          if [[ "${{ inputs.replace_existing_assets }}" == true ]]; then
-            extra_args+=(--allow-lower-version)
-          fi
           python3 scripts/release_version.py \
             --repo-root . \
             --module-prop module/module.prop \
             --version-tag "${INPUT_VERSION_TAG}" \
             --version-code "${INPUT_VERSION_CODE}" \
-            --github-output "${GITHUB_OUTPUT}" \
-            "${extra_args[@]}"
+            --github-output "${GITHUB_OUTPUT}"
 
       - name: Check tag and release collisions
         id: collision
@@ -113,55 +96,35 @@ jobs:
           REPLACE_EXISTING_ASSETS: ${{ inputs.replace_existing_assets }}
         run: |
           set -euo pipefail
-          local_tag=false
-          remote_tag=false
+          tag_exists=false
           release_exists=false
-          git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null && local_tag=true || true
-          git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1 && remote_tag=true || true
+          git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1 && tag_exists=true || true
           gh release view "${RELEASE_TAG}" >/dev/null 2>&1 && release_exists=true || true
+          [[ "${release_exists}" != true || "${tag_exists}" == true ]] || { echo '::error::Release exists without its immutable tag.'; exit 1; }
 
-          if [[ "${local_tag}" != "${remote_tag}" ]]; then
-            echo "::error::Local and remote tag state disagree for ${RELEASE_TAG}."
-            exit 1
-          fi
-          if [[ "${release_exists}" == true && "${remote_tag}" != true ]]; then
-            echo "::error::Release ${RELEASE_TAG} exists without a matching Git tag."
-            exit 1
-          fi
-
-          if [[ "${remote_tag}" == true ]]; then
-            if [[ -z "$(printf '%s' "${INPUT_VERSION_TAG}" | xargs)" ]]; then
-              echo "::error::The automatically resolved tag ${RELEASE_TAG} already exists. Use its exact version_tag to resume or rebuild it."
-              exit 1
-            fi
+          if [[ "${tag_exists}" == true ]]; then
+            [[ -n "$(printf '%s' "${INPUT_VERSION_TAG}" | xargs)" ]] || { echo "::error::Automatically resolved tag ${RELEASE_TAG} already exists."; exit 1; }
             if [[ "${release_exists}" == true && "${REPLACE_EXISTING_ASSETS}" != true ]]; then
-              echo "::error::Tag and release ${RELEASE_TAG} already exist. Enable replace_existing_assets only to rebuild that exact tagged source."
+              echo "::error::Tag and release ${RELEASE_TAG} exist. Enable replace_existing_assets only for this exact tag."
               exit 1
             fi
-            if [[ "${release_exists}" != true ]]; then
-              echo "::warning::Tag ${RELEASE_TAG} exists without a release. Resuming publication from that exact immutable tag."
-            fi
-            echo "existing_release=${release_exists}" >> "${GITHUB_OUTPUT}"
-            echo "tagged_source=true" >> "${GITHUB_OUTPUT}"
-            echo "new_release=false" >> "${GITHUB_OUTPUT}"
-            echo "tag_commit=$(git rev-list -n 1 "${RELEASE_TAG}")" >> "${GITHUB_OUTPUT}"
+            echo "tagged_source=true" >>"${GITHUB_OUTPUT}"
+            echo "existing_release=${release_exists}" >>"${GITHUB_OUTPUT}"
+            echo "new_release=false" >>"${GITHUB_OUTPUT}"
           else
-            echo "existing_release=false" >> "${GITHUB_OUTPUT}"
-            echo "tagged_source=false" >> "${GITHUB_OUTPUT}"
-            echo "new_release=true" >> "${GITHUB_OUTPUT}"
-            echo "tag_commit=" >> "${GITHUB_OUTPUT}"
+            [[ "${release_exists}" != true ]] || { echo '::error::Release collision without tag.'; exit 1; }
+            echo 'tagged_source=false' >>"${GITHUB_OUTPUT}"
+            echo 'existing_release=false' >>"${GITHUB_OUTPUT}"
+            echo 'new_release=true' >>"${GITHUB_OUTPUT}"
           fi
 
-      - name: Prepare exact release source and metadata
+      - name: Prepare exact release source
         id: source
         shell: bash
         env:
           TAGGED_SOURCE: ${{ steps.collision.outputs.tagged_source }}
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
           RELEASE_VERSION_CODE: ${{ steps.version.outputs.release_version_code }}
-          CURRENT_VERSION: ${{ steps.version.outputs.current_version }}
-          CURRENT_VERSION_CODE: ${{ steps.version.outputs.current_version_code }}
-          VERSION_INCREASES: ${{ steps.version.outputs.version_increases }}
           INPUT_VERSION_CODE: ${{ inputs.version_code }}
         run: |
           set -euo pipefail
@@ -172,59 +135,27 @@ jobs:
             git checkout --detach "${RELEASE_TAG}"
             source_version="$(sed -n 's/^version=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
             source_code="$(sed -n 's/^versionCode=//p' module/module.prop | head -n1 | tr -d '[:space:]')"
-            if [[ "${source_version}" != "${RELEASE_TAG}" ]]; then
-              echo "::error::Tagged source reports ${source_version}, not ${RELEASE_TAG}."
-              exit 1
-            fi
-            if [[ -n "$(printf '%s' "${INPUT_VERSION_CODE}" | xargs)" && "${source_code}" != "${INPUT_VERSION_CODE}" ]]; then
-              echo "::error::Existing tag versionCode is ${source_code}, not requested ${INPUT_VERSION_CODE}."
-              exit 1
-            fi
-            echo "release_version=${source_version#v}" >> "${GITHUB_OUTPUT}"
-            echo "release_version_code=${source_code}" >> "${GITHUB_OUTPUT}"
-            echo "release_commit=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
-            echo "metadata_commit_created=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          if [[ "${RELEASE_TAG}" == "${CURRENT_VERSION}" ]]; then
-            if (( RELEASE_VERSION_CODE < CURRENT_VERSION_CODE )); then
-              echo "::error::Version ${RELEASE_TAG} cannot reduce versionCode ${CURRENT_VERSION_CODE} to ${RELEASE_VERSION_CODE}."
-              exit 1
-            fi
+            [[ "${source_version}" == "${RELEASE_TAG}" ]] || { echo "::error::Tagged source reports ${source_version}."; exit 1; }
+            [[ -z "$(printf '%s' "${INPUT_VERSION_CODE}" | xargs)" || "${source_code}" == "${INPUT_VERSION_CODE}" ]] || { echo "::error::Tagged versionCode is ${source_code}."; exit 1; }
           else
-            if [[ "${VERSION_INCREASES}" != true ]]; then
-              echo "::error::New release version ${RELEASE_TAG} is not newer than current ${CURRENT_VERSION}."
-              exit 1
+            python3 scripts/release_version.py \
+              --repo-root . \
+              --module-prop module/module.prop \
+              --version-tag "${RELEASE_TAG}" \
+              --version-code "${RELEASE_VERSION_CODE}" \
+              --apply
+            if ! git diff --quiet -- module/module.prop; then
+              git add module/module.prop
+              git commit -m "chore(release): prepare ${RELEASE_TAG}"
+              git push origin "HEAD:${GITHUB_REF_NAME}"
             fi
-            if (( RELEASE_VERSION_CODE <= CURRENT_VERSION_CODE )); then
-              echo "::error::A newer release requires a versionCode greater than ${CURRENT_VERSION_CODE}; resolved ${RELEASE_VERSION_CODE}."
-              exit 1
-            fi
+            source_version="${RELEASE_TAG}"
+            source_code="${RELEASE_VERSION_CODE}"
           fi
 
-          python3 scripts/release_version.py \
-            --repo-root . \
-            --module-prop module/module.prop \
-            --version-tag "${RELEASE_TAG}" \
-            --version-code "${RELEASE_VERSION_CODE}" \
-            --apply
-          python3 scripts/sync_runtime_version.py --repo-root . --apply
-
-          if git diff --quiet -- module/module.prop module/service.sh module/tools/ts18-saf-deepdiag.sh; then
-            echo 'Version metadata already matches the requested new release.'
-            metadata_commit_created=false
-          else
-            git add module/module.prop module/service.sh module/tools/ts18-saf-deepdiag.sh
-            git commit -m "chore(release): prepare ${RELEASE_TAG}"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
-            metadata_commit_created=true
-          fi
-
-          echo "release_version=${RELEASE_TAG#v}" >> "${GITHUB_OUTPUT}"
-          echo "release_version_code=${RELEASE_VERSION_CODE}" >> "${GITHUB_OUTPUT}"
-          echo "release_commit=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
-          echo "metadata_commit_created=${metadata_commit_created}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${source_version#v}" >>"${GITHUB_OUTPUT}"
+          echo "release_version_code=${source_code}" >>"${GITHUB_OUTPUT}"
+          echo "release_commit=$(git rev-parse HEAD)" >>"${GITHUB_OUTPUT}"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -236,7 +167,6 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android platform and build tools
-        shell: bash
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
       - name: Set up Gradle
@@ -245,10 +175,9 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build signed root provider
-        shell: bash
         run: python3 scripts/build-root-provider.py --repo-root . --gradle gradle --timeout 900
 
-      - name: Validate scripts, module, and provider version
+      - name: Validate source module and provider version
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
@@ -258,88 +187,66 @@ jobs:
           set -euo pipefail
           find module -type f -name '*.sh' -print -exec sh -n {} ';'
           sh -n module/META-INF/com/google/android/update-binary
-          python3 scripts/validate-module.py \
-            --module-dir module \
-            --expected-version "${RELEASE_TAG}" \
-            --expected-version-code "${RELEASE_VERSION_CODE}"
-          python3 scripts/sync_runtime_version.py --repo-root . --check
-
+          python3 scripts/validate-module.py --module-dir module --expected-version "${RELEASE_TAG}" --expected-version-code "${RELEASE_VERSION_CODE}"
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           aapt_path="$(find "${sdk_root}/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt | sort -V | tail -n1)"
-          [[ -x "${aapt_path}" ]] || { echo '::error::aapt was not found.'; exit 1; }
           badging="$(${aapt_path} dump badging module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk | head -n1)"
-          provider_code="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<< "${badging}")"
-          provider_name="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<< "${badging}")"
-          [[ "${provider_code}" == "${RELEASE_VERSION_CODE}" ]] || { echo "::error::Provider versionCode ${provider_code} != ${RELEASE_VERSION_CODE}"; exit 1; }
-          [[ "${provider_name}" == "${RELEASE_VERSION}" ]] || { echo "::error::Provider versionName ${provider_name} != ${RELEASE_VERSION}"; exit 1; }
+          provider_code="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<<"${badging}")"
+          provider_name="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<<"${badging}")"
+          [[ "${provider_code}" == "${RELEASE_VERSION_CODE}" ]]
+          [[ "${provider_name}" == "${RELEASE_VERSION}" ]]
 
-      - name: Build deterministic installable ZIP
-        id: build
-        shell: bash
-        run: python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --github-output "${GITHUB_OUTPUT}"
+      - name: Build lean final module
+        id: final
+        run: python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --variant final --github-output "${GITHUB_OUTPUT}"
 
-      - name: Verify ZIP structure and checksum
+      - name: Build debug module
+        id: debug
+        run: python3 scripts/build-magisk-zip.py --module-dir module --out-dir dist --variant debug --github-output "${GITHUB_OUTPUT}"
+
+      - name: Verify variant checksums and generate update metadata
         shell: bash
         env:
-          ZIP_PATH: ${{ steps.build.outputs.zip_path }}
-          SHA_PATH: ${{ steps.build.outputs.sha256_path }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+          FINAL_NAME: ${{ steps.final.outputs.zip_name }}
+          FINAL_SHA_PATH: ${{ steps.final.outputs.sha256_path }}
+          DEBUG_SHA_PATH: ${{ steps.debug.outputs.sha256_path }}
         run: |
           set -euo pipefail
-          python3 - "${ZIP_PATH}" <<'PY'
-          import sys
-          import zipfile
-          from pathlib import Path
+          (cd dist && sha256sum -c "$(basename "${FINAL_SHA_PATH}")")
+          (cd dist && sha256sum -c "$(basename "${DEBUG_SHA_PATH}")")
+          python3 scripts/make-update-json.py \
+            --module-dir module \
+            --repository "${GITHUB_REPOSITORY}" \
+            --tag "${RELEASE_TAG}" \
+            --zip-name "${FINAL_NAME}" \
+            --out dist/update.json
 
-          path = Path(sys.argv[1])
-          with zipfile.ZipFile(path) as archive:
-              bad = archive.testzip()
-              if bad:
-                  raise SystemExit(f'corrupt ZIP member: {bad}')
-              required = {
-                  'module.prop',
-                  'customize.sh',
-                  'system/priv-app/DocumentsUI/DocumentsUI.apk',
-                  'system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk',
-                  'tools/rootfs-helper.sh',
-              }
-              names = set(archive.namelist())
-              missing = required - names
-              if missing:
-                  raise SystemExit(f'missing ZIP entries: {sorted(missing)}')
-              compressed = [item.filename for item in archive.infolist() if item.compress_type != zipfile.ZIP_STORED]
-              if compressed:
-                  raise SystemExit(f'non-STORE entries: {compressed[:10]}')
-          print(f'OK {path}')
-          PY
-          (cd "$(dirname "${SHA_PATH}")" && sha256sum -c "$(basename "${SHA_PATH}")")
-
-      - name: Generate update metadata and release notes
+      - name: Generate release notes
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
           RELEASE_VERSION_CODE: ${{ steps.source.outputs.release_version_code }}
           RELEASE_COMMIT: ${{ steps.source.outputs.release_commit }}
           PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
-          ZIP_NAME: ${{ steps.build.outputs.zip_name }}
-          ZIP_SHA256: ${{ steps.build.outputs.sha256 }}
+          FINAL_NAME: ${{ steps.final.outputs.zip_name }}
+          FINAL_SHA: ${{ steps.final.outputs.sha256 }}
+          DEBUG_NAME: ${{ steps.debug.outputs.zip_name }}
+          DEBUG_SHA: ${{ steps.debug.outputs.sha256 }}
         run: |
           set -euo pipefail
-          python3 scripts/make-update-json.py \
-            --module-dir module \
-            --repository "${GITHUB_REPOSITORY}" \
-            --tag "${RELEASE_TAG}" \
-            --zip-name "${ZIP_NAME}" \
-            --out dist/update.json
-
           {
-            echo "# TS18 Full File Picker ${RELEASE_TAG}"
+            echo "# ts-docsui ${RELEASE_TAG}"
             echo
-            echo "- Module ID: \`ts18_documentsui_saf_full\`"
+            echo '- Module ID: `ts-docsui`'
             echo "- Version code: \`${RELEASE_VERSION_CODE}\`"
             echo "- Source commit: \`${RELEASE_COMMIT}\`"
-            echo "- ZIP SHA-256: \`${ZIP_SHA256}\`"
+            echo "- Final module: \`${FINAL_NAME}\`"
+            echo "- Final SHA-256: \`${FINAL_SHA}\`"
+            echo "- Debug module: \`${DEBUG_NAME}\`"
+            echo "- Debug SHA-256: \`${DEBUG_SHA}\`"
             echo
-            echo 'Restores the Android system file picker, exposes full internal storage, and provides a separate Magisk-root file source for root-only paths.'
+            echo 'The final module contains runtime components only. The debug module adds the bounded diagnostics collector and Magisk Action entry point.'
             echo
             echo '## Changes'
             if [[ -n "${PREVIOUS_TAG}" && "${PREVIOUS_TAG}" != "${RELEASE_TAG}" ]]; then
@@ -347,7 +254,7 @@ jobs:
             else
               git log --no-merges --max-count=20 --pretty='- %s' "${RELEASE_COMMIT}"
             fi
-          } > dist/release-notes.md
+          } >dist/release-notes.md
 
       - name: Create and push annotated tag
         if: ${{ steps.collision.outputs.new_release == 'true' }}
@@ -358,20 +265,20 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$(git rev-parse HEAD)" == "${RELEASE_COMMIT}" ]] || { echo '::error::Release source moved before tagging.'; exit 1; }
-          if git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null; then
-            echo "::error::Tag ${RELEASE_TAG} appeared during this run."
-            exit 1
-          fi
-          git tag -a "${RELEASE_TAG}" "${RELEASE_COMMIT}" -m "TS18 Full File Picker ${RELEASE_TAG}"
+          git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null && { echo "::error::Tag ${RELEASE_TAG} appeared during this run."; exit 1; } || true
+          git tag -a "${RELEASE_TAG}" "${RELEASE_COMMIT}" -m "ts-docsui ${RELEASE_TAG}"
           git push origin "refs/tags/${RELEASE_TAG}"
 
-      - name: Upload validated workflow artifact
+      - name: Upload validated workflow artifacts
+        id: artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.build.outputs.zip_name }}
+          name: ts-docsui-${{ steps.version.outputs.release_tag }}-modules
           path: |
-            ${{ steps.build.outputs.zip_path }}
-            ${{ steps.build.outputs.sha256_path }}
+            ${{ steps.final.outputs.zip_path }}
+            ${{ steps.final.outputs.sha256_path }}
+            ${{ steps.debug.outputs.zip_path }}
+            ${{ steps.debug.outputs.sha256_path }}
             dist/update.json
             dist/release-notes.md
           if-no-files-found: error
@@ -381,20 +288,21 @@ jobs:
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
-          RELEASE_NAME: TS18 Full File Picker ${{ steps.version.outputs.release_tag }}
           EXISTING_RELEASE: ${{ steps.collision.outputs.existing_release }}
-          ZIP_PATH: ${{ steps.build.outputs.zip_path }}
-          SHA_PATH: ${{ steps.build.outputs.sha256_path }}
+          FINAL_ZIP: ${{ steps.final.outputs.zip_path }}
+          FINAL_SHA: ${{ steps.final.outputs.sha256_path }}
+          DEBUG_ZIP: ${{ steps.debug.outputs.zip_path }}
+          DEBUG_SHA: ${{ steps.debug.outputs.sha256_path }}
           DRAFT: ${{ inputs.draft }}
           PRERELEASE: ${{ inputs.prerelease }}
         run: |
           set -euo pipefail
+          assets=("${FINAL_ZIP}" "${FINAL_SHA}" "${DEBUG_ZIP}" "${DEBUG_SHA}" dist/update.json)
           if [[ "${EXISTING_RELEASE}" == true ]]; then
-            gh release upload "${RELEASE_TAG}" "${ZIP_PATH}" "${SHA_PATH}" dist/update.json --clobber
+            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
             exit 0
           fi
-
-          args=(release create "${RELEASE_TAG}" "${ZIP_PATH}" "${SHA_PATH}" dist/update.json --verify-tag --title "${RELEASE_NAME}" --notes-file dist/release-notes.md)
+          args=(release create "${RELEASE_TAG}" "${assets[@]}" --verify-tag --title "ts-docsui ${RELEASE_TAG}" --notes-file dist/release-notes.md)
           [[ "${DRAFT}" == true ]] && args+=(--draft)
           [[ "${PRERELEASE}" == true ]] && args+=(--prerelease)
           gh "${args[@]}"
@@ -402,14 +310,16 @@ jobs:
       - name: Write release summary
         if: ${{ always() }}
         shell: bash
+        env:
+          ARTIFACT_URL: ${{ steps.artifacts.outputs.artifact-url }}
         run: |
           {
-            echo '## TS18 Magisk release'
+            echo '## ts-docsui release'
             echo
             echo "- Version: \`${{ steps.version.outputs.release_tag }}\`"
             echo "- Version code: \`${{ steps.source.outputs.release_version_code }}\`"
-            echo "- Existing release rebuild: \`${{ steps.collision.outputs.existing_release }}\`"
-            echo "- Tagged source recovery: \`${{ steps.collision.outputs.tagged_source }}\`"
             echo "- Source commit: \`${{ steps.source.outputs.release_commit }}\`"
-            echo "- ZIP: \`${{ steps.build.outputs.zip_name }}\`"
-          } >> "${GITHUB_STEP_SUMMARY}"
+            echo "- Final: \`${{ steps.final.outputs.zip_name }}\`"
+            echo "- Debug: \`${{ steps.debug.outputs.zip_name }}\`"
+            [[ -z "${ARTIFACT_URL}" ]] || echo "- Workflow artifacts: [Download both variants](${ARTIFACT_URL})"
+          } >>"${GITHUB_STEP_SUMMARY}"
