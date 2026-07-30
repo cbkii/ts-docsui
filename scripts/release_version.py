@@ -64,23 +64,45 @@ def parse_properties(path: Path) -> dict[str, str]:
     )
 
 
-def list_git_tags(repo_root: Path) -> list[str]:
+def run_git(repo_root: Path, arguments: list[str], *, timeout: int = 30) -> str:
     try:
         completed = subprocess.run(
-            ["git", "tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"],
+            ["git", *arguments],
             cwd=repo_root,
             check=False,
             text=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=30,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("git tag exceeded 30 seconds") from exc
+        raise RuntimeError(f"git {' '.join(arguments)} exceeded {timeout} seconds") from exc
     if completed.returncode != 0:
-        raise RuntimeError(f"git tag failed: {completed.stderr.strip()}")
-    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        raise RuntimeError(
+            f"git {' '.join(arguments)} failed with status {completed.returncode}: "
+            f"{completed.stderr.strip()}"
+        )
+    return completed.stdout
+
+
+def list_git_tags(repo_root: Path) -> list[str]:
+    output = run_git(repo_root, ["tag", "--list", "v[0-9]*.[0-9]*.[0-9]*"])
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def is_prepared_release_commit(
+    repo_root: Path, module_prop: Path, current_version: str
+) -> bool:
+    try:
+        relative = module_prop.resolve().relative_to(repo_root.resolve())
+    except ValueError:
+        return False
+    subject = run_git(
+        repo_root,
+        ["log", "-1", "--format=%s", "--", relative.as_posix()],
+    ).strip()
+    return subject == f"chore(release): prepare {parse_semver(current_version).tag}"
 
 
 def valid_tag_versions(tags: Iterable[str]) -> list[SemVer]:
@@ -101,6 +123,7 @@ def resolve_release(
     requested_version: str = "",
     requested_version_code: str = "",
     allow_lower_version: bool = False,
+    prepared_release: bool = False,
 ) -> dict[str, object]:
     current = parse_semver(current_version, field="module version")
     if not current_version_code.isdigit():
@@ -122,12 +145,9 @@ def resolve_release(
                 f"requested version {target.tag} is lower than current release floor "
                 f"{release_floor.tag}"
             )
-    elif latest_tag is not None and current > latest_tag and current not in known:
-        # A previous release run may have committed its exact source but failed before
-        # creating the tag. Blank input resumes that untagged current version instead
-        # of accidentally skipping another patch number.
+    elif prepared_release and current not in known:
         target = current
-        source = "resume-current-untagged"
+        source = "resume-prepared-untagged"
     else:
         target = release_floor.bump_patch()
         source = "auto-patch"
@@ -138,7 +158,7 @@ def resolve_release(
             raise ValueError("version_code must contain only digits")
         target_code = int(requested_version_code, 10)
         code_source = "explicit"
-    elif target == current and source in {"explicit", "resume-current-untagged"}:
+    elif target == current and source in {"explicit", "resume-prepared-untagged"}:
         target_code = current_code
         code_source = "current-version"
     else:
@@ -238,13 +258,17 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         props = parse_properties(module_prop)
+        current_version = props.get("version", "")
         result = resolve_release(
-            current_version=props.get("version", ""),
+            current_version=current_version,
             current_version_code=props.get("versionCode", ""),
             tags=list_git_tags(repo_root),
             requested_version=args.version_tag,
             requested_version_code=args.version_code,
             allow_lower_version=args.allow_lower_version,
+            prepared_release=is_prepared_release_commit(
+                repo_root, module_prop, current_version
+            ),
         )
         if args.apply:
             apply_release(
