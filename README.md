@@ -32,6 +32,8 @@ Every release contains two installable ZIPs with the same runtime implementation
 
 Use the final module for normal operation. Install the debug module only while collecting evidence or diagnosing a problem. Do not install both at once; both use the module ID `ts-docsui`.
 
+Each variant has its own Magisk update channel. Final installations update to the next final ZIP, while debug installations update to the next debug ZIP.
+
 ## Installation
 
 1. Download one ZIP from the [latest release](https://github.com/cbkii/ts-docsui/releases/latest).
@@ -40,6 +42,12 @@ Use the final module for normal operation. Install the debug module only while c
 4. Reboot the head unit.
 
 After reboot, open a file picker from an app. Normal internal storage should remain the stock Android source. The separate full/root entries are supplied by the root provider. USB entries appear only while USB storage is mounted.
+
+## Updating in Magisk
+
+Update-enabled releases include a public `updateJson` channel in `module.prop`. When a newer `versionCode` is published, Magisk can show an **Update** control for `ts-docsui` in the installed Modules view. Use that control to download and install the matching final or debug ZIP, then reboot.
+
+A build installed before the update channel was added cannot discover it retroactively. Install one update-enabled release manually once; later releases can then be installed from the Magisk module view.
 
 ## Diagnostics
 

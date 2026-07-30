@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.release_version import apply_release, parse_semver, resolve_release
+from scripts.release_version import (
+    apply_release,
+    is_prepared_release_commit,
+    parse_semver,
+    resolve_release,
+)
 
 
 class ReleaseVersionTests(unittest.TestCase):
@@ -17,6 +23,74 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertEqual(result["release_tag"], "v1.0.1")
         self.assertEqual(result["release_version_code"], "101")
         self.assertEqual(result["version_source"], "auto-patch")
+
+    def test_blank_input_bumps_unprepared_current_version_ahead_of_tags(self) -> None:
+        result = resolve_release(
+            current_version="v1.3.1",
+            current_version_code="131",
+            tags=["v1.3.0"],
+        )
+        self.assertEqual(result["release_tag"], "v1.3.2")
+        self.assertEqual(result["release_version_code"], "132")
+        self.assertEqual(result["version_source"], "auto-patch")
+
+    def test_blank_input_resumes_workflow_prepared_untagged_release(self) -> None:
+        result = resolve_release(
+            current_version="v1.3.1",
+            current_version_code="131",
+            tags=["v1.3.0"],
+            prepared_release=True,
+        )
+        self.assertEqual(result["release_tag"], "v1.3.1")
+        self.assertEqual(result["release_version_code"], "131")
+        self.assertEqual(result["version_source"], "resume-prepared-untagged")
+        self.assertEqual(result["version_code_source"], "current-version")
+        self.assertFalse(result["metadata_change"])
+
+    def test_prepared_release_detection_uses_latest_module_metadata_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            module_prop = repo / "module/module.prop"
+            module_prop.parent.mkdir()
+            module_prop.write_text(
+                "id=ts-docsui\nversion=v1.3.1\nversionCode=131\n",
+                encoding="utf-8",
+            )
+            commands = (
+                ["git", "init", "-q"],
+                ["git", "config", "user.name", "test"],
+                ["git", "config", "user.email", "test@example.invalid"],
+                ["git", "add", "module/module.prop"],
+                ["git", "commit", "-q", "-m", "chore(release): prepare v1.3.1"],
+            )
+            for command in commands:
+                subprocess.run(command, cwd=repo, check=True, timeout=10)
+            self.assertTrue(is_prepared_release_commit(repo, module_prop, "v1.3.1"))
+
+            (repo / "README.md").write_text("later docs\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, timeout=10)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "docs: follow up"],
+                cwd=repo,
+                check=True,
+                timeout=10,
+            )
+            self.assertTrue(is_prepared_release_commit(repo, module_prop, "v1.3.1"))
+
+            module_prop.write_text(
+                "id=ts-docsui\nversion=v1.3.1\nversionCode=132\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "add", "module/module.prop"], cwd=repo, check=True, timeout=10
+            )
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "chore: adjust metadata"],
+                cwd=repo,
+                check=True,
+                timeout=10,
+            )
+            self.assertFalse(is_prepared_release_commit(repo, module_prop, "v1.3.1"))
 
     def test_latest_tag_wins_as_auto_bump_base(self) -> None:
         result = resolve_release(

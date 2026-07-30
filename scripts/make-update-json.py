@@ -13,12 +13,13 @@ except ModuleNotFoundError:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Generate and validate Magisk update.json for an exact release asset."
+        description="Generate and validate Magisk update metadata for one exact release variant."
     )
     parser.add_argument("--module-dir", type=Path, default=Path("module"))
     parser.add_argument("--repository", required=True, help="owner/repo")
     parser.add_argument("--tag", required=True)
     parser.add_argument("--zip-name", required=True)
+    parser.add_argument("--variant", choices=("final", "debug"), default="final")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -31,9 +32,10 @@ def main(argv: list[str] | None = None) -> int:
             tag=args.tag,
             zip_path=zip_path,
             checksum_path=checksum_path,
+            variant=args.variant,
         )
         atomic_write_json(args.out, payload)
-        print(f"OK update metadata: {args.out}")
+        print(f"OK {args.variant} update metadata: {args.out}")
         print(f"zip={zip_path}")
         print(f"sha256={digest}")
         return 0

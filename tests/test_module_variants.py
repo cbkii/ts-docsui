@@ -14,6 +14,7 @@ SPEC.loader.exec_module(MODULE)
 DEBUG_ONLY = MODULE.DEBUG_ONLY
 DEBUG_REQUIRED = MODULE.DEBUG_REQUIRED
 FINAL_EXCLUDE = MODULE.FINAL_EXCLUDE
+UPDATE_JSON_URLS = MODULE.UPDATE_JSON_URLS
 main = MODULE.main
 
 
@@ -21,7 +22,15 @@ class ModuleVariantTests(unittest.TestCase):
     def make_module(self, root: Path) -> Path:
         module = root / "module"
         files = {
-            "module.prop": "id=ts-docsui\nname=ts-docsui\nversion=v1.2.3\nversionCode=123\nauthor=cbkii\ndescription=test\n",
+            "module.prop": (
+                "id=ts-docsui\n"
+                "name=ts-docsui\n"
+                "version=v1.2.3\n"
+                "versionCode=123\n"
+                "author=cbkii\n"
+                "description=test\n"
+                f"updateJson={UPDATE_JSON_URLS['final']}\n"
+            ),
             "customize.sh": "#!/system/bin/sh\n",
             "service.sh": "#!/system/bin/sh\n",
             "post-fs-data.sh": "#!/system/bin/sh\n",
@@ -37,7 +46,16 @@ class ModuleVariantTests(unittest.TestCase):
             path.write_text(content, encoding="utf-8")
         return module
 
-    def test_final_and_debug_names_and_inventory(self) -> None:
+    @staticmethod
+    def read_props(archive: zipfile.ZipFile) -> dict[str, str]:
+        props: dict[str, str] = {}
+        for line in archive.read("module.prop").decode("utf-8").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                props[key] = value
+        return props
+
+    def test_final_and_debug_names_inventory_and_update_channels(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             module = self.make_module(root)
@@ -51,10 +69,47 @@ class ModuleVariantTests(unittest.TestCase):
             with zipfile.ZipFile(final) as archive:
                 final_names = set(archive.namelist())
                 self.assertFalse(FINAL_EXCLUDE & final_names)
+                self.assertEqual(self.read_props(archive)["updateJson"], UPDATE_JSON_URLS["final"])
             with zipfile.ZipFile(debug) as archive:
                 debug_names = set(archive.namelist())
                 self.assertTrue(DEBUG_REQUIRED <= debug_names)
                 self.assertTrue(DEBUG_ONLY <= debug_names)
+                self.assertEqual(self.read_props(archive)["updateJson"], UPDATE_JSON_URLS["debug"])
+
+    def test_update_channel_rewrite_normalizes_leading_whitespace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            module = self.make_module(root)
+            module_prop = module / "module.prop"
+            module_prop.write_text(
+                module_prop.read_text(encoding="utf-8").replace(
+                    f"updateJson={UPDATE_JSON_URLS['final']}",
+                    f"  updateJson = {UPDATE_JSON_URLS['final']}",
+                ),
+                encoding="utf-8",
+            )
+            out = root / "dist"
+            self.assertEqual(main(["--module-dir", str(module), "--out-dir", str(out), "--variant", "debug"]), 0)
+            with zipfile.ZipFile(out / "ts-docsui-debug-v123.zip") as archive:
+                embedded = archive.read("module.prop").decode("utf-8")
+                self.assertIn(f"updateJson={UPDATE_JSON_URLS['debug']}\n", embedded)
+                self.assertNotIn("  updateJson", embedded)
+
+    def test_missing_source_update_channel_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            module = self.make_module(root)
+            module_prop = module / "module.prop"
+            module_prop.write_text(
+                module_prop.read_text(encoding="utf-8").replace(
+                    f"updateJson={UPDATE_JSON_URLS['final']}\n", ""
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                main(["--module-dir", str(module), "--out-dir", str(root / "dist"), "--variant", "final"]),
+                1,
+            )
 
 
 if __name__ == "__main__":

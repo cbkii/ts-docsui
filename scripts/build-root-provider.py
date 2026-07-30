@@ -5,11 +5,18 @@ import argparse
 import base64
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
+
+EXPECTED_SIGNER_SHA256 = "f37b37a05c410b48b9ebfeb7fc03b7d08429ae5c2992a7da00d9474dd71868f8"
+CERT_DIGEST_RE = re.compile(
+    r"^\s*(?:Signer #\d+\s+|V[1-4] Signer:\s*)certificate SHA-256 digest:\s*([0-9a-fA-F]+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def sha256(path: Path) -> str:
@@ -25,6 +32,62 @@ def fail(message: str) -> int:
     return 1
 
 
+def find_android_tool(name: str) -> str | None:
+    resolved = shutil.which(name)
+    if resolved:
+        return resolved
+
+    candidates: list[Path] = []
+    for variable in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        root = os.environ.get(variable)
+        if not root:
+            continue
+        candidates.extend(
+            path
+            for path in (Path(root) / "build-tools").glob(f"*/{name}")
+            if path.is_file() and os.access(path, os.X_OK)
+        )
+    if not candidates:
+        return None
+
+    def version_key(path: Path) -> tuple[int, ...]:
+        numbers = tuple(int(value, 10) for value in re.findall(r"\d+", path.parent.name))
+        return numbers or (0,)
+
+    return str(max(candidates, key=version_key))
+
+
+def signer_digest(apksigner: str, apk: Path) -> str:
+    completed = subprocess.run(
+        [apksigner, "verify", "--print-certs", str(apk)],
+        check=False,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    combined_output = "\n".join(
+        part.strip() for part in (completed.stdout, completed.stderr) if part.strip()
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"apksigner verification failed for {apk}: {combined_output or 'no output'}"
+        )
+
+    digests = {value.lower() for value in CERT_DIGEST_RE.findall(combined_output)}
+    if not digests:
+        preview = combined_output[:1_000] or "no output"
+        raise RuntimeError(
+            f"apksigner did not report a SHA-256 signer digest for {apk}; output={preview!r}"
+        )
+    if len(digests) != 1:
+        raise RuntimeError(
+            f"apksigner reported multiple signer SHA-256 digests for {apk}: {sorted(digests)}"
+        )
+    return next(iter(digests))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Build the signed TS18 root DocumentsProvider and place it in the Magisk module."
@@ -38,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     encoded_key = repo / "rootprovider/keystore/tsdocsui-root-provider.jks.b64"
     key = repo / "rootprovider/keystore/tsdocsui-root-provider.jks"
     output_apk = repo / "module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk"
+    baseline_apk = repo / ".build/provider-before-build.apk"
 
     if not encoded_key.is_file():
         return fail(f"encoded signing key is missing: {encoded_key}")
@@ -54,6 +118,14 @@ def main(argv: list[str] | None = None) -> int:
     key.parent.mkdir(parents=True, exist_ok=True)
     key.write_bytes(key_bytes)
     os.chmod(key, 0o600)
+
+    if output_apk.is_file():
+        baseline_apk.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output_apk, baseline_apk)
+        print(f"BASELINE provider APK: {baseline_apk}")
+        print(f"baseline_sha256={sha256(baseline_apk)}")
+    else:
+        baseline_apk.unlink(missing_ok=True)
 
     gradle = shutil.which(args.gradle) if os.path.sep not in args.gradle else args.gradle
     if not gradle:
@@ -97,6 +169,32 @@ def main(argv: list[str] | None = None) -> int:
                 return fail(f"provider APK has a corrupt member: {bad}")
     except zipfile.BadZipFile as exc:
         return fail(f"provider APK is invalid: {exc}")
+
+    apksigner = find_android_tool("apksigner")
+    if not apksigner:
+        return fail("apksigner is unavailable after the Android SDK setup")
+    try:
+        built_signer = signer_digest(apksigner, output_apk)
+        if built_signer != EXPECTED_SIGNER_SHA256:
+            return fail(
+                "provider signing certificate does not match the pinned release identity: "
+                f"expected={EXPECTED_SIGNER_SHA256} built={built_signer}"
+            )
+        print(f"signer_sha256={built_signer}")
+        print("OK provider signing certificate matches the pinned release identity")
+
+        if baseline_apk.is_file():
+            baseline_signer = signer_digest(apksigner, baseline_apk)
+            if baseline_signer != built_signer:
+                return fail(
+                    "provider signing certificate changed from the tracked APK baseline: "
+                    f"baseline={baseline_signer} built={built_signer}"
+                )
+            print("OK provider signing certificate matches the tracked APK baseline")
+        else:
+            print("INFO: no tracked provider APK baseline; pinned signer identity remains enforced")
+    except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        return fail(str(exc))
 
     print(f"OK provider APK: {output_apk}")
     print(f"size={output_apk.stat().st_size}")
