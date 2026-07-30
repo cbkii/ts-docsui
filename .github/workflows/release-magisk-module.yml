@@ -444,15 +444,20 @@ jobs:
         shell: bash
         env:
           ARTIFACT_URL: ${{ steps.artifacts.outputs.artifact-url }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+          RELEASE_VERSION_CODE: ${{ steps.metadata.outputs.release_version_code }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.release_commit }}
+          FINAL_NAME: ${{ steps.final.outputs.zip_name }}
+          DEBUG_NAME: ${{ steps.debug.outputs.zip_name }}
         run: |
           {
             echo '## ts-docsui release'
             echo
-            echo "- Version: \`${{ steps.version.outputs.release_tag }}\`"
-            echo "- Version code: \`${{ steps.metadata.outputs.release_version_code }}\`"
-            echo "- Source commit: \`${{ steps.source.outputs.release_commit }}\`"
-            echo "- Final: \`${{ steps.final.outputs.zip_name }}\`"
-            echo "- Debug: \`${{ steps.debug.outputs.zip_name }}\`"
+            echo "- Version: \`${RELEASE_TAG}\`"
+            echo "- Version code: \`${RELEASE_VERSION_CODE}\`"
+            echo "- Source commit: \`${RELEASE_COMMIT}\`"
+            echo "- Final: \`${FINAL_NAME}\`"
+            echo "- Debug: \`${DEBUG_NAME}\`"
             echo '- Update manifests: `update.json`, `update-debug.json`'
             [[ -z "${ARTIFACT_URL}" ]] || echo "- Workflow artifacts: [Download both variants](${ARTIFACT_URL})"
           } >>"${GITHUB_STEP_SUMMARY}"
