@@ -12,6 +12,8 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 DEBUG_ONLY = MODULE.DEBUG_ONLY
+DEBUG_REQUIRED = MODULE.DEBUG_REQUIRED
+FINAL_EXCLUDE = MODULE.FINAL_EXCLUDE
 main = MODULE.main
 
 
@@ -47,9 +49,12 @@ class ModuleVariantTests(unittest.TestCase):
             self.assertTrue(final.is_file())
             self.assertTrue(debug.is_file())
             with zipfile.ZipFile(final) as archive:
-                self.assertFalse(DEBUG_ONLY & set(archive.namelist()))
+                final_names = set(archive.namelist())
+                self.assertFalse(FINAL_EXCLUDE & final_names)
             with zipfile.ZipFile(debug) as archive:
-                self.assertTrue(DEBUG_ONLY <= set(archive.namelist()))
+                debug_names = set(archive.namelist())
+                self.assertTrue(DEBUG_REQUIRED <= debug_names)
+                self.assertTrue(DEBUG_ONLY <= debug_names)
 
 
 if __name__ == "__main__":
