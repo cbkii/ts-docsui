@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+OLD_MODULE_ID = "ts18_documentsui_" + "saf_full"
 
 
 class PickerRecoveryContractTests(unittest.TestCase):
@@ -30,7 +31,7 @@ class PickerRecoveryContractTests(unittest.TestCase):
             for path in REPO_ROOT.rglob("*")
             if path.is_file() and ".git" not in path.parts
         )
-        self.assertNotIn("ts18_documentsui_saf_full", all_text)
+        self.assertNotIn(OLD_MODULE_ID, all_text)
 
     def test_runtime_output_is_download_only_and_state_is_small(self) -> None:
         service = self.read("module/service.sh")
@@ -114,7 +115,7 @@ class PickerRecoveryContractTests(unittest.TestCase):
         self.assertIn("zip_has action.sh", installer)
         self.assertNotIn("OLD_MODID", installer)
         self.assertNotIn("old_schema", installer)
-        self.assertNotIn("ts18_documentsui_saf_full", installer)
+        self.assertNotIn(OLD_MODULE_ID, installer)
 
     def test_final_and_debug_zip_contract_is_encoded(self) -> None:
         builder = self.read("scripts/build-magisk-zip.py")
