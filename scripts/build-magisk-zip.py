@@ -65,7 +65,7 @@ def add_bytes(archive: zipfile.ZipFile, path: Path, arcname: str, payload: bytes
 def variant_module_prop(path: Path, variant: str) -> bytes:
     text = path.read_text(encoding="utf-8", errors="strict")
     updated, count = re.subn(
-        r"(?m)^updateJson=.*$",
+        r"(?m)^[ \t]*updateJson[ \t]*=.*$",
         f"updateJson={UPDATE_JSON_URLS[variant]}",
         text,
     )
