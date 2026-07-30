@@ -185,7 +185,7 @@ jobs:
           python3 scripts/build-root-provider.py --repo-root . --gradle gradle --timeout 900
           module_apk='module/system/priv-app/TS18RootFileProvider/TS18RootFileProvider.apk'
           if [[ "${TAGGED_SOURCE}" == true ]]; then
-            cp -f "${module_apk}" .build/rebuilt-TS18RootFileProvider.apk
+            cp -f -- "${module_apk}" .build/rebuilt-TS18RootFileProvider.apk
             git checkout -- "${module_apk}"
             echo 'built_apk=.build/rebuilt-TS18RootFileProvider.apk' >>"${GITHUB_OUTPUT}"
           else
@@ -271,7 +271,7 @@ jobs:
           if [[ "${TAGGED_SOURCE}" == true ]]; then
             git diff --quiet || { echo '::error::Exact tagged source was modified during rebuild validation.'; git status --short; exit 1; }
           else
-            unexpected="$(git diff --name-only | grep -Ev "^(${module_prop}|${provider_apk})$" || true)"
+            unexpected="$(git diff --name-only | awk -v module_prop="${module_prop}" -v provider_apk="${provider_apk}" '$0 != module_prop && $0 != provider_apk')"
             [[ -z "${unexpected}" ]] || { echo '::error::Unexpected tracked release changes:'; printf '%s\n' "${unexpected}"; exit 1; }
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
