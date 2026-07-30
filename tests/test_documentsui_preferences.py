@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import re
 import shlex
+import subprocess
+import tempfile
+import textwrap
 import unittest
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
@@ -50,20 +53,46 @@ class DocumentsUiPreferenceTests(unittest.TestCase):
             "showDeviceStorageOption",
         }
         self.assertEqual(set(keys), expected)
-        self.assertIn("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>", self.function)
-        self.assertIn("} >\"$template\"", self.function)
-        self.assertIn('<boolean name="fileSize" value="true" />', self.function)
 
-        runtime_xml = "<map>" + "".join(
-            f'<boolean name="{key}" value="true" />' for key in keys
-        ) + '<boolean name="fileSize" value="true" /></map>'
-        root = ElementTree.fromstring(runtime_xml)
+        generation = re.search(
+            r"template=\$GEN/documentsui\.xml\n(?P<body>\s*\{.*?\n\s*\} >\"\$template\")\n\s*for name in",
+            self.function,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(generation, "DocumentsUI XML generation block is missing")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            shell = textwrap.dedent(
+                f"""
+                set -eu
+                GEN=$1
+                value=true
+                template=$GEN/documentsui.xml
+                {textwrap.dedent(generation.group('body'))}
+                """
+            )
+            subprocess.run(
+                ["sh", "-c", shell, "ts-docsui-test", str(output_dir)],
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10,
+            )
+            generated = output_dir / "documentsui.xml"
+            self.assertTrue(generated.is_file())
+            root = ElementTree.parse(generated).getroot()  # noqa: S314 - trusted generated test output
+
+        self.assertEqual(root.tag, "map")
         entries = {element.attrib.get("name"): element for element in root}
-        self.assertTrue((expected | {"fileSize"}).issubset(entries))
-        for name in expected | {"fileSize"}:
+        self.assertEqual(set(entries), expected | {"fileSize"})
+        for name in expected:
             with self.subTest(name=name):
                 self.assertEqual(entries[name].tag, "boolean")
                 self.assertEqual(entries[name].attrib.get("value"), "true")
+        self.assertEqual(entries["fileSize"].attrib.get("value"), "true")
 
 
 if __name__ == "__main__":
