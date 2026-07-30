@@ -43,6 +43,7 @@ FORBIDDEN_FILES = [
     "tools/ts18-saf-evidence-remount.sh",
 ]
 VERSION_RE = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+FINAL_UPDATE_JSON = "https://github.com/cbkii/ts-docsui/releases/latest/download/update.json"
 
 
 def parse_prop(path: Path) -> dict[str, str]:
@@ -54,7 +55,10 @@ def parse_prop(path: Path) -> dict[str, str]:
         if "=" not in line:
             raise ValueError(f"Malformed module.prop line: {raw!r}")
         key, value = line.split("=", 1)
-        props[key.strip()] = value.strip()
+        key = key.strip()
+        if key in props:
+            raise ValueError(f"Duplicate module.prop key: {key}")
+        props[key] = value.strip()
     return props
 
 
@@ -106,11 +110,13 @@ def main(argv: list[str] | None = None) -> int:
         props = parse_prop(module_dir / "module.prop")
     except ValueError as exc:
         return fail(str(exc))
-    for key in ("id", "name", "version", "versionCode", "author", "description"):
+    for key in ("id", "name", "version", "versionCode", "author", "description", "updateJson"):
         if not props.get(key):
             return fail(f"module.prop missing required key: {key}")
     if props["id"] != "ts-docsui":
         return fail(f"module id must be ts-docsui, found {props['id']!r}")
+    if props["updateJson"] != FINAL_UPDATE_JSON:
+        return fail(f"module updateJson must use the stable release channel: {FINAL_UPDATE_JSON}")
     if not VERSION_RE.fullmatch(props["version"]):
         return fail(f"version must use vMAJOR.MINOR.PATCH: {props['version']}")
     if not props["versionCode"].isdigit() or int(props["versionCode"]) < 1:
