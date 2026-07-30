@@ -132,7 +132,6 @@ jobs:
           }
           debug_only = {'action.sh', 'tools/ts18-saf-deepdiag.sh'}
           debug_required = debug_only | {'README.md'}
-          non_runtime = debug_required
           forbidden = {
               'system/etc/sysconfig/ts18-documentsui-saf.xml',
               'system/priv-app/ExternalStorageProvider/ExternalStorageProvider.apk',
@@ -142,6 +141,10 @@ jobs:
               'tools/ts18-saf-evidence-v2.sh',
               'tools/ts18-saf-evidence-common.sh',
               'tools/ts18-saf-evidence-remount.sh',
+          }
+          expected_updates = {
+              'final': 'https://github.com/cbkii/ts-docsui/releases/latest/download/update.json',
+              'debug': 'https://github.com/cbkii/ts-docsui/releases/latest/download/update-debug.json',
           }
           for path, variant in ((final_path, 'final'), (debug_path, 'debug')):
               with zipfile.ZipFile(path, allowZip64=False) as archive:
@@ -158,10 +161,17 @@ jobs:
                   compressed = [item.filename for item in archive.infolist() if item.compress_type != zipfile.ZIP_STORED]
                   if compressed:
                       raise SystemExit(f'{variant}: non-STORE entries {compressed[:10]}')
-                  if variant == 'final' and non_runtime & names:
-                      raise SystemExit(f'final: non-runtime entries present {sorted(non_runtime & names)}')
+                  if variant == 'final' and debug_required & names:
+                      raise SystemExit(f'final: non-runtime entries present {sorted(debug_required & names)}')
                   if variant == 'debug' and not debug_required <= names:
                       raise SystemExit(f'debug: missing debug entries {sorted(debug_required - names)}')
+                  props = {}
+                  for line in archive.read('module.prop').decode('utf-8').splitlines():
+                      if '=' in line:
+                          key, value = line.split('=', 1)
+                          props[key] = value
+                  if props.get('updateJson') != expected_updates[variant]:
+                      raise SystemExit(f'{variant}: wrong updateJson channel {props.get("updateJson")!r}')
           print(f'OK {final_path.name} and {debug_path.name}')
           PY
           (cd dist && sha256sum -c "$(basename "${FINAL_SHA}")")
