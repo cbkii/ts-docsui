@@ -28,6 +28,31 @@ def fail(message: str) -> int:
     return 1
 
 
+def find_android_tool(name: str) -> str | None:
+    resolved = shutil.which(name)
+    if resolved:
+        return resolved
+
+    candidates: list[Path] = []
+    for variable in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        root = os.environ.get(variable)
+        if not root:
+            continue
+        candidates.extend(
+            path
+            for path in (Path(root) / "build-tools").glob(f"*/{name}")
+            if path.is_file() and os.access(path, os.X_OK)
+        )
+    if not candidates:
+        return None
+
+    def version_key(path: Path) -> tuple[int, ...]:
+        numbers = tuple(int(value, 10) for value in re.findall(r"\d+", path.parent.name))
+        return numbers or (0,)
+
+    return str(max(candidates, key=version_key))
+
+
 def signer_digest(apksigner: str, apk: Path) -> str:
     completed = subprocess.run(
         [apksigner, "verify", "--print-certs", str(apk)],
@@ -130,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     except zipfile.BadZipFile as exc:
         return fail(f"provider APK is invalid: {exc}")
 
-    apksigner = shutil.which("apksigner")
+    apksigner = find_android_tool("apksigner")
     if not apksigner:
         return fail("apksigner is unavailable after the Android SDK setup")
     try:
