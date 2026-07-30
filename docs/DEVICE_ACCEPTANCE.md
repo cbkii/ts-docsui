@@ -7,100 +7,108 @@ Target baseline:
 - TS18 `s9863a1h10_Natv` / UIS8581A / SP9863A;
 - Android 10 / API 29;
 - Magisk 28 or later;
-- module ID `ts18_documentsui_saf_full`.
+- module ID `ts-docsui`.
 
 Do not change firmware, MCU, CAN, LCD, boot, logo or read-only partitions during this procedure.
 
-## Diagnostic command
+## Use the debug variant
 
-Run from a root Termux shell or Magisk Action:
-
-```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh MODE'
-```
-
-Replace `MODE` with the stage name below. Replace `com.tw.media` with the exact client package being tested. The collector is package-version agnostic and records the live package identity.
-
-Verified archives are written to:
+Install the exact CI or release asset named:
 
 ```text
-/storage/emulated/0/Download/TS18-SAF-Diagnostics/
+ts-docsui-debug-v<versionCode>.zip
 ```
+
+The lean final ZIP does not contain diagnostic scripts. Both variants use the same module ID, so installing the debug ZIP replaces the final ZIP rather than creating a second module.
+
+Run diagnostics from a root Termux shell or Magisk Action:
+
+```sh
+su -c 'TS_DOCSUI_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh MODE'
+```
+
+Replace `MODE` with the stage name below. Replace `com.tw.media` with the exact client package being tested.
+
+All diagnostic work and verified archives are written under:
+
+```text
+/storage/emulated/0/Download/ts-docsui/diagnostics/
+```
+
+No diagnostic staging is permitted under `/data/adb`.
 
 ## Stage 0 — preserve the current baseline
 
-Before installing or updating the module:
+Before installing or updating:
 
 ```sh
-su -c '/data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh baseline'
+su -c '/data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh baseline'
 ```
 
-When the module is not yet installed, preserve equivalent package, provider, AppOps, logcat and mount evidence using the prior installed module or a root diagnostic shell.
+When no debug module is installed, preserve equivalent package, provider, AppOps, logcat and mount evidence using the current diagnostic module before replacing it.
 
 ## Stage 1 — migration boot
 
-1. Install the exact CI Magisk ZIP.
+1. Install the exact debug ZIP.
 2. Reboot once.
 3. Wait two minutes after the launcher becomes usable.
-4. Do not repeatedly open the picker while boot reconciliation is still running.
-5. Run:
+4. Run:
 
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh boot1'
+su -c 'TS_DOCSUI_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh boot1'
 ```
 
 Expected:
 
-- any package, component, permission, AppOps, preference or ownership mutation is finite and explained;
-- no warning says `Tag component-override is unknown` for this module;
+- package, component, permission, AppOps, preference or ownership mutations are finite and explained;
+- no `component-override` sysconfig warning is produced by this module;
 - stock `primary:` remains visible;
 - root-provider failure does not disable or refresh stock ExternalStorageProvider;
-- no continuing alternating external-storage remount burst remains after the boot settles.
+- no continuing alternating external-storage remount burst remains after boot settles.
 
 ## Stage 2 — settled second boot
 
-1. Reboot without changing module configuration.
+1. Reboot without changing configuration.
 2. Wait two minutes after the launcher becomes usable.
 3. Run:
 
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh boot2'
+su -c 'TS_DOCSUI_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh boot2'
 ```
 
 Expected:
 
-- latest reconciliation mutations: `0`;
-- package/component state: no change;
-- permissions and AppOps: no write;
-- preference/helper files: no replacement;
-- DocumentsUI ownership: no recursive repair;
+- latest reconciliation mutations: `0`, unless a specific external state changed;
+- no repeated permission or AppOps write;
+- no preference/helper replacement;
+- no DocumentsUI ownership repair;
 - no cache clear or provider force-stop;
 - no alternating remount storm.
 
-A non-zero mutation count is not automatically unsafe, but it must be explained before release promotion.
+Any non-zero mutation must be explained before release promotion.
 
 ## Stage 3 — picker and ordinary storage
 
 Use the real client app and test separately:
 
 1. `OPEN_DOCUMENT` from `Music`, `Documents`, `Pictures`, `DCIM` and `Download`.
-2. `CREATE_DOCUMENT` in a non-Download internal folder.
+2. `CREATE_DOCUMENT` in a non-Download folder.
 3. `OPEN_DOCUMENT_TREE` for `/storage/emulated/0` and a nested folder.
-4. USB selection under `/storage/usbdisk0` when a USB volume is mounted.
+4. USB selection under `/storage/usbdisk0` while a known-good volume is mounted.
 
-Capture before opening the picker and immediately after the result returns:
+Capture immediately before and after each picker action:
 
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh before-picker'
+su -c 'TS_DOCSUI_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh before-picker'
 # perform one picker action
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh after-picker'
+su -c 'TS_DOCSUI_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh after-picker'
 ```
 
-Record the exact action, selected URI and whether the client could read or write through that URI.
+Record the exact action, selected URI and whether the client could read or write through it.
 
 ## Stage 4 — persisted URI grant
 
-The client must call `takePersistableUriPermission`; picker display alone is not enough.
+The client must call `takePersistableUriPermission`; picker display alone is insufficient.
 
 1. Select the Music tree with `OPEN_DOCUMENT_TREE`.
 2. Confirm the client reports the selected URI.
@@ -112,33 +120,37 @@ The client must call `takePersistableUriPermission`; picker display alone is not
 8. Perform an ACC sleep/wake cycle; read again.
 9. Capture `after-grant-acc`.
 
-Commands:
-
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh after-grant'
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh after-client-restart'
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh after-grant-reboot'
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh after-grant-acc'
+su -c 'TS_DOCSUI_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh after-grant'
+su -c 'TS_DOCSUI_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh after-client-restart'
+su -c 'TS_DOCSUI_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh after-grant-reboot'
+su -c 'TS_DOCSUI_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh after-grant-acc'
 ```
 
-The diagnostic bundle records system URI-grant state, but the client must also prove real access.
+The diagnostic bundle records system URI-grant state, but the client must prove real access.
 
 ## Stage 5 — root-provider isolation
 
-Test three states independently:
+Test three states independently.
 
 ### Root provider disabled
 
-Set `FIX_ENABLE_ROOT_FILE_PROVIDER=0`, reboot and capture `root-disabled`.
+Set `FIX_ENABLE_ROOT_FILE_PROVIDER=0` in:
 
-Expected: DocumentsUI and stock `primary:` still work.
+```text
+/data/adb/ts-docsui.conf
+```
 
-### Root provider enabled, Magisk root denied
+Reboot and capture `root-disabled`.
 
-Enable the provider, deny its Magisk request and capture:
+Expected: DocumentsUI and stock `primary:` continue to work.
+
+### Root provider enabled, root denied
+
+Enable the provider, deny its Magisk permission and capture:
 
 ```sh
-su -c 'TS18_SAF_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts18_documentsui_saf_full/tools/ts18-saf-evidence-v2.sh root-denied'
+su -c 'TS_DOCSUI_CLIENT_PACKAGE=com.tw.media /data/adb/modules/ts-docsui/tools/ts18-saf-deepdiag.sh root-denied'
 ```
 
 Expected:
@@ -148,11 +160,11 @@ Expected:
 - root-only content fails clearly;
 - no repeated root prompt, AppOps write or remount loop occurs.
 
-### Root provider enabled, Magisk root granted
+### Root provider enabled, root granted
 
-Grant root and capture `root-granted` after browsing a regular root-only file.
+Grant root and capture `root-granted` after browsing a harmless root-only file.
 
-Expected: bounded root-only operations work without affecting stock storage.
+Expected: bounded root-only reads work without affecting stock storage.
 
 Do not test writes under protected system, vendor, metadata, Magisk or Android state paths.
 
@@ -166,22 +178,36 @@ Do not test writes under protected system, vendor, metadata, Magisk or Android s
 6. Confirm the picker updates without a remount storm.
 7. Capture `usb-inserted` and `usb-removed`.
 
-## Stage 7 — rollback
+## Stage 7 — final-variant replacement
 
-1. Disable the Magisk module.
+After diagnostics are complete:
+
+1. preserve the diagnostic archives and SHA-256 files;
+2. install `ts-docsui-v<versionCode>.zip` from the same build or release;
+3. reboot;
+4. confirm ordinary picker and root-provider behaviour is unchanged;
+5. confirm Magisk no longer shows an Action button for this module;
+6. confirm `action.sh` and `tools/ts18-saf-deepdiag.sh` are absent from `/data/adb/modules/ts-docsui`.
+
+## Stage 8 — rollback
+
+1. Disable or remove the Magisk module.
 2. Reboot.
-3. Confirm stock packages and provider authorities return to the expected baseline.
+3. Confirm stock package and provider authorities return to the expected baseline.
 4. Confirm no module sysconfig overlay remains.
-5. Preserve a final `rollback` diagnostic archive before deleting any state.
+5. Preserve a final rollback diagnostic archive before replacing or deleting evidence.
+
+Download logs and diagnostic archives are intentionally not removed by module uninstall.
 
 ## Release gate
 
 Do not promote the module as physically validated until:
 
-- picker actions work from real clients;
+- picker actions work from real clients outside Downloads;
 - the second settled boot has no unexplained mutation;
 - persisted grants survive client restart, reboot and ACC sleep/wake;
 - root denial cannot break stock storage;
 - USB lifecycle works;
-- no unsupported sysconfig warning or remount storm remains;
+- no unsupported sysconfig warning or sustained remount storm remains;
+- the final variant behaves like the debug variant without diagnostic payload;
 - disable/remove plus reboot restores the prior package/provider state.
