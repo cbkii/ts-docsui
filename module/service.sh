@@ -96,7 +96,8 @@ set_cfg() {
 load_cfg() {
   [ -f "$CFG" ] || cp -f "$MODDIR/config.default" "$CFG" 2>/dev/null || return 0
   while IFS='=' read -r key value || [ -n "$key" ]; do
-    case "$key:$value" in ''*|'#'*|*:*[!A-Za-z0-9_./:-]*) continue;; esac
+    case "$key" in ''|'#'*) continue;; esac
+    case "$value" in *[!A-Za-z0-9_./:-]*) continue;; esac
     set_cfg "$key" "$value" || continue
   done <"$CFG"
 }
