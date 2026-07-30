@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 
 CERT_DIGEST_RE = re.compile(
-    r"^\s*(?:Signer #\d+|V[1-4] Signer):\s*certificate SHA-256 digest:\s*([0-9a-fA-F]+)\s*$",
+    r"^\s*(?:Signer #\d+\s+|V[1-4] Signer:\s*)certificate SHA-256 digest:\s*([0-9a-fA-F]+)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
