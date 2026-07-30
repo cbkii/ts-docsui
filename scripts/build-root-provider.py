@@ -12,6 +12,7 @@ import sys
 import zipfile
 from pathlib import Path
 
+EXPECTED_SIGNER_SHA256 = "f37b37a05c410b48b9ebfeb7fc03b7d08429ae5c2992a7da00d9474dd71868f8"
 CERT_DIGEST_RE = re.compile(
     r"^\s*(?:Signer #\d+\s+|V[1-4] Signer:\s*)certificate SHA-256 digest:\s*([0-9a-fA-F]+)\s*$",
     re.IGNORECASE | re.MULTILINE,
@@ -174,18 +175,24 @@ def main(argv: list[str] | None = None) -> int:
         return fail("apksigner is unavailable after the Android SDK setup")
     try:
         built_signer = signer_digest(apksigner, output_apk)
+        if built_signer != EXPECTED_SIGNER_SHA256:
+            return fail(
+                "provider signing certificate does not match the pinned release identity: "
+                f"expected={EXPECTED_SIGNER_SHA256} built={built_signer}"
+            )
+        print(f"signer_sha256={built_signer}")
+        print("OK provider signing certificate matches the pinned release identity")
+
         if baseline_apk.is_file():
             baseline_signer = signer_digest(apksigner, baseline_apk)
             if baseline_signer != built_signer:
                 return fail(
-                    "provider signing certificate changed: "
+                    "provider signing certificate changed from the tracked APK baseline: "
                     f"baseline={baseline_signer} built={built_signer}"
                 )
-            print(f"signer_sha256={built_signer}")
-            print("OK provider signing certificate matches the tracked baseline")
+            print("OK provider signing certificate matches the tracked APK baseline")
         else:
-            print(f"signer_sha256={built_signer}")
-            print("WARN: no tracked provider APK was available for signing-baseline comparison")
+            print("INFO: no tracked provider APK baseline; pinned signer identity remains enforced")
     except (RuntimeError, subprocess.TimeoutExpired) as exc:
         return fail(str(exc))
 
