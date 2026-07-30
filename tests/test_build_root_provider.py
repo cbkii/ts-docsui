@@ -28,29 +28,28 @@ class BuildRootProviderTests(unittest.TestCase):
         apksigner.chmod(0o755)
         return apksigner
 
-    def test_signer_digest_accepts_scheme_labelled_output_on_stderr(self) -> None:
+    def assert_digest(self, output: str, expected: str = "aabbccdd") -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            apksigner = self.make_apksigner(
-                root,
-                "V2 Signer: certificate DN: CN=TS18 Root Provider\r\n"
-                "V2 Signer: certificate SHA-256 digest: AABBCCDD\r\n",
-            )
+            apksigner = self.make_apksigner(root, output)
             apk = root / "provider.apk"
             apk.write_bytes(b"fixture")
-            self.assertEqual(MODULE.signer_digest(str(apksigner), apk), "aabbccdd")
+            self.assertEqual(MODULE.signer_digest(str(apksigner), apk), expected)
+
+    def test_signer_digest_accepts_scheme_labelled_output_on_stderr(self) -> None:
+        self.assert_digest(
+            "V2 Signer: certificate DN: CN=TS18 Root Provider\r\n"
+            "V2 Signer: certificate SHA-256 digest: AABBCCDD\r\n"
+        )
+
+    def test_signer_digest_accepts_legacy_numbered_output(self) -> None:
+        self.assert_digest("Signer #1 certificate SHA-256 digest: AABBCCDD\n")
 
     def test_signer_digest_accepts_same_digest_across_signature_schemes(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            apksigner = self.make_apksigner(
-                root,
-                "V1 Signer: certificate SHA-256 digest: AABBCCDD\n"
-                "V2 Signer: certificate SHA-256 digest: AABBCCDD\n",
-            )
-            apk = root / "provider.apk"
-            apk.write_bytes(b"fixture")
-            self.assertEqual(MODULE.signer_digest(str(apksigner), apk), "aabbccdd")
+        self.assert_digest(
+            "V1 Signer: certificate SHA-256 digest: AABBCCDD\n"
+            "V2 Signer: certificate SHA-256 digest: AABBCCDD\n"
+        )
 
     def test_signer_digest_rejects_multiple_distinct_signers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
