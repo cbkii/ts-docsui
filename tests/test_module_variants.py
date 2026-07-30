@@ -76,6 +76,25 @@ class ModuleVariantTests(unittest.TestCase):
                 self.assertTrue(DEBUG_ONLY <= debug_names)
                 self.assertEqual(self.read_props(archive)["updateJson"], UPDATE_JSON_URLS["debug"])
 
+    def test_update_channel_rewrite_normalizes_leading_whitespace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            module = self.make_module(root)
+            module_prop = module / "module.prop"
+            module_prop.write_text(
+                module_prop.read_text(encoding="utf-8").replace(
+                    f"updateJson={UPDATE_JSON_URLS['final']}",
+                    f"  updateJson = {UPDATE_JSON_URLS['final']}",
+                ),
+                encoding="utf-8",
+            )
+            out = root / "dist"
+            self.assertEqual(main(["--module-dir", str(module), "--out-dir", str(out), "--variant", "debug"]), 0)
+            with zipfile.ZipFile(out / "ts-docsui-debug-v123.zip") as archive:
+                embedded = archive.read("module.prop").decode("utf-8")
+                self.assertIn(f"updateJson={UPDATE_JSON_URLS['debug']}\n", embedded)
+                self.assertNotIn("  updateJson", embedded)
+
     def test_missing_source_update_channel_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
