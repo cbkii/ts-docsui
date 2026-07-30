@@ -1,7 +1,7 @@
 id=ts-docsui
 name=TS18 Full File Picker
-version=v1.3.0
-versionCode=130
+version=v1.3.1
+versionCode=131
 author=cbkii
 description=Shows all internal storage and adds a Magisk-root file provider for the full device.
 updateJson=https://github.com/cbkii/ts-docsui/releases/latest/download/update.json
