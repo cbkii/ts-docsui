@@ -116,13 +116,13 @@ class ReleaseVersionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "module.prop"
             path.write_text(
-                "id=ts18_documentsui_saf_full\nversion=v1.0.0\nversionCode=100\nauthor=cbkii\n",
+                "id=ts-docsui\nversion=v1.0.0\nversionCode=100\nauthor=cbkii\n",
                 encoding="utf-8",
             )
             apply_release(path, "v1.0.1", "101")
             self.assertEqual(
                 path.read_text(encoding="utf-8"),
-                "id=ts18_documentsui_saf_full\nversion=v1.0.1\nversionCode=101\nauthor=cbkii\n",
+                "id=ts-docsui\nversion=v1.0.1\nversionCode=101\nauthor=cbkii\n",
             )
 
 
