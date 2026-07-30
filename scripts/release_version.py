@@ -122,6 +122,12 @@ def resolve_release(
                 f"requested version {target.tag} is lower than current release floor "
                 f"{release_floor.tag}"
             )
+    elif latest_tag is not None and current > latest_tag and current not in known:
+        # A previous release run may have committed its exact source but failed before
+        # creating the tag. Blank input resumes that untagged current version instead
+        # of accidentally skipping another patch number.
+        target = current
+        source = "resume-current-untagged"
     else:
         target = release_floor.bump_patch()
         source = "auto-patch"
@@ -132,9 +138,7 @@ def resolve_release(
             raise ValueError("version_code must contain only digits")
         target_code = int(requested_version_code, 10)
         code_source = "explicit"
-    elif requested_version and target == current:
-        # An explicit request for the current, still-untagged version is a safe resume path
-        # after a prior release run committed metadata but failed before creating its tag.
+    elif target == current and source in {"explicit", "resume-current-untagged"}:
         target_code = current_code
         code_source = "current-version"
     else:
