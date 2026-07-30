@@ -19,6 +19,8 @@ DEBUG_ONLY = {
     "action.sh",
     "tools/ts18-saf-deepdiag.sh",
 }
+DEBUG_REQUIRED = DEBUG_ONLY | {"README.md"}
+FINAL_EXCLUDE = DEBUG_REQUIRED
 
 
 def parse_prop(path: Path) -> dict[str, str]:
@@ -41,7 +43,7 @@ def should_exclude(path: Path, module_dir: Path, variant: str) -> bool:
     rel = path.relative_to(module_dir)
     if any(part in EXCLUDE_NAMES for part in rel.parts):
         return True
-    return variant == "final" and rel.as_posix() in DEBUG_ONLY
+    return variant == "final" and rel.as_posix() in FINAL_EXCLUDE
 
 
 def zip_mode(path: Path) -> int:
@@ -100,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     if not version_code.isdigit() or int(version_code) < 1:
         print(f"ERROR: versionCode must be a positive integer: {version_code!r}", file=sys.stderr)
         return 1
-    for required in DEBUG_ONLY:
+    for required in DEBUG_REQUIRED:
         if not (module_dir / required).is_file():
             print(f"ERROR: source module is missing debug payload: {required}", file=sys.stderr)
             return 1
@@ -131,10 +133,10 @@ def main(argv: list[str] | None = None) -> int:
             names = set(archive.namelist())
             if any(info.compress_type != zipfile.ZIP_STORED for info in archive.infolist()):
                 raise RuntimeError("ZIP contains a compressed entry")
-            if args.variant == "final" and DEBUG_ONLY & names:
-                raise RuntimeError(f"final ZIP contains debug-only entries: {sorted(DEBUG_ONLY & names)}")
-            if args.variant == "debug" and not DEBUG_ONLY <= names:
-                raise RuntimeError(f"debug ZIP is missing entries: {sorted(DEBUG_ONLY - names)}")
+            if args.variant == "final" and FINAL_EXCLUDE & names:
+                raise RuntimeError(f"final ZIP contains non-runtime entries: {sorted(FINAL_EXCLUDE & names)}")
+            if args.variant == "debug" and not DEBUG_REQUIRED <= names:
+                raise RuntimeError(f"debug ZIP is missing entries: {sorted(DEBUG_REQUIRED - names)}")
         os.replace(temp_path, zip_path)
     except Exception as exc:
         temp_path.unlink(missing_ok=True)
