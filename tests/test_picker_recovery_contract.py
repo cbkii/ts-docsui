@@ -40,6 +40,14 @@ class PickerRecoveryContractTests(unittest.TestCase):
         self.assertNotIn("/data/adb/ts-docsui/logs", service)
         self.assertNotIn("/data/adb/ts-docsui/diagnostics", service)
 
+    def test_runtime_config_loader_accepts_known_safe_values(self) -> None:
+        service = self.read("module/service.sh")
+        body = self.method_body(service, "load_cfg()")
+        self.assertIn('case "$key" in', body)
+        self.assertIn('case "$value" in', body)
+        self.assertIn('set_cfg "$key" "$value"', body)
+        self.assertNotIn('case "$key:$value"', body)
+
     def test_component_state_has_android10_package_dump_fallback(self) -> None:
         service = self.read("module/service.sh")
         body = self.method_body(service, "component_state()")
@@ -72,6 +80,18 @@ class PickerRecoveryContractTests(unittest.TestCase):
         self.assertNotIn("/data/adb/ts-docsui/diagnostics", diagnostic)
         self.assertIn("timeout", diagnostic)
         self.assertIn("tar -tzf", diagnostic)
+
+    def test_root_provider_uses_current_helper_and_stage_paths(self) -> None:
+        shell = self.read(
+            "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootShell.java"
+        )
+        provider = self.read(
+            "rootprovider/src/main/java/com/cbkii/tsdocsui/rootprovider/RootDocumentsProvider.java"
+        )
+        self.assertIn('/data/adb/ts-docsui/rootfs-helper.sh', shell)
+        self.assertIn('/storage/emulated/0/.ts-docsui-root-provider', provider)
+        self.assertNotIn('/data/adb/ts18-documentsui-saf', shell + provider)
+        self.assertNotIn('/storage/emulated/0/.TS18-Root-Provider', shell + provider)
 
     def test_legacy_wrappers_collectors_and_version_sync_are_removed(self) -> None:
         obsolete = (
