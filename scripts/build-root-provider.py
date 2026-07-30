@@ -12,7 +12,10 @@ import sys
 import zipfile
 from pathlib import Path
 
-CERT_DIGEST_RE = re.compile(r"^Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]+)$", re.MULTILINE)
+CERT_DIGEST_RE = re.compile(
+    r"^\s*Signer #1 certificate SHA-256 digest:\s*([0-9a-fA-F]+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def sha256(path: Path) -> str:
@@ -63,13 +66,19 @@ def signer_digest(apksigner: str, apk: Path) -> str:
         stderr=subprocess.PIPE,
         timeout=60,
     )
+    combined_output = "\n".join(
+        part.strip() for part in (completed.stdout, completed.stderr) if part.strip()
+    )
     if completed.returncode != 0:
         raise RuntimeError(
-            f"apksigner verification failed for {apk}: {completed.stderr.strip()}"
+            f"apksigner verification failed for {apk}: {combined_output or 'no output'}"
         )
-    match = CERT_DIGEST_RE.search(completed.stdout)
+    match = CERT_DIGEST_RE.search(combined_output)
     if not match:
-        raise RuntimeError(f"apksigner did not report a SHA-256 signer digest for {apk}")
+        preview = combined_output[:1_000] or "no output"
+        raise RuntimeError(
+            f"apksigner did not report a SHA-256 signer digest for {apk}; output={preview!r}"
+        )
     return match.group(1).lower()
 
 
